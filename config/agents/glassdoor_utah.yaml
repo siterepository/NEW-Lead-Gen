@@ -1,0 +1,62 @@
+# Glassdoor Utah Agent
+# Scrapes Glassdoor company reviews in Utah for dissatisfied employees.
+# Low-rated companies signal employees open to career changes.
+
+agent:
+  name: glassdoor_utah
+  description: "Scrape Glassdoor for Utah company reviews indicating dissatisfaction"
+  platform: glassdoor
+  category: job_boards
+  enabled: true
+
+source:
+  base_url: "https://www.glassdoor.com"
+  search_params:
+    state_id: 937  # Utah Glassdoor state ID
+    sort: "relevance"
+    low_rating_threshold: 3.0
+    industries:
+      - "Banking"
+      - "Insurance"
+      - "Real Estate"
+      - "Financial Services"
+      - "Accounting"
+      - "Sales"
+      - "Retail"
+      - "Education"
+
+scraping:
+  rate_limit:
+    requests_per_minute: 10
+    delay_min: 3.0
+    delay_max: 8.0
+  schedule_minutes: 180
+  max_pages: 8
+  max_results_per_run: 150
+
+selectors:
+  listing_container: "div[data-test='employer-card-single'], div.single-company-result"
+  company_name: "h2 a.eiCell-master-wrap, a[data-test='cell-Reviews-url']"
+  rating: "span[data-test='rating'], span.ratingNumber"
+  review_count: "span[data-test='cell-Reviews-count']"
+  location: "span.loc, span.employer-location"
+  industry: "span.industry"
+  review_snippet: "div.review-snippet"
+  next_page: "li.next a"
+
+extraction:
+  fields:
+    - name: company_name
+      required: true
+    - name: rating
+      required: false
+    - name: review_count
+      required: false
+    - name: location
+      required: false
+    - name: industry
+      required: false
+
+filters:
+  max_rating: 3.0
+  require_utah_location: true

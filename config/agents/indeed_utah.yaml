@@ -1,0 +1,73 @@
+# Indeed Utah Agent
+# Scrapes Indeed.com for Utah job listings targeting career changers.
+# NOTE: Indeed has strong anti-bot - uses long delays and aggressive UA rotation.
+
+agent:
+  name: indeed_utah
+  description: "Scrape Indeed for Utah job seekers and career changers"
+  platform: indeed
+  category: job_boards
+  enabled: true
+
+source:
+  base_url: "https://www.indeed.com"
+  search_params:
+    location: "Utah"
+    sort: "date"
+    fromage: 14
+    keywords:
+      - "career change"
+      - "financial advisor"
+      - "insurance agent"
+      - "sales representative"
+      - "business development"
+      - "entrepreneur"
+      - "real estate agent"
+      - "self employed"
+      - "independent contractor"
+      - "commission sales"
+      - "wealth management"
+      - "financial planner"
+      - "account manager"
+
+scraping:
+  rate_limit:
+    requests_per_minute: 6
+    delay_min: 5.0
+    delay_max: 15.0
+  schedule_minutes: 120
+  max_pages: 5
+  max_results_per_run: 150
+
+selectors:
+  listing_container: "div.job_seen_beacon, td.resultContent"
+  title: "h2.jobTitle a, a.jcs-JobTitle"
+  company: "span.companyName, span[data-testid='company-name']"
+  location: "div.companyLocation, div[data-testid='text-location']"
+  salary: "div.salary-snippet-container"
+  description: "div.job-snippet"
+  date_posted: "span.date"
+  next_page: "a[data-testid='pagination-page-next']"
+
+extraction:
+  fields:
+    - name: title
+      required: true
+    - name: company
+      required: false
+    - name: location
+      required: false
+    - name: salary
+      required: false
+    - name: description
+      required: false
+    - name: date_posted
+      required: false
+
+filters:
+  min_description_length: 10
+  exclude_keywords:
+    - "scam"
+    - "MLM"
+    - "pyramid"
+  require_utah_location: true

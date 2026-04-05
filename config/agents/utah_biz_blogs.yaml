@@ -1,0 +1,48 @@
+# Utah Business Blogs & News Agent
+# Monitors Utah business blogs for career change and entrepreneurship articles.
+
+agent:
+  name: utah_biz_blogs
+  description: "Monitor Utah business blogs for career change and entrepreneurship articles"
+  platform: content
+  category: content
+  enabled: true
+
+source:
+  target_sites:
+    - name: "Utah Business"
+      base_url: "https://www.utahbusiness.com"
+      search_path: "/?s={query}"
+    - name: "Silicon Slopes"
+      base_url: "https://www.siliconslopes.com"
+      search_path: "/?s={query}"
+  google_queries:
+    - 'site:utahbusiness.com "career change" OR "new career"'
+    - 'site:utahbusiness.com "entrepreneur" OR "startup founder"'
+    - 'site:utahbusiness.com "business closure" OR "layoffs"'
+    - 'site:siliconslopes.com "career change" OR "hiring"'
+    - 'site:siliconslopes.com "entrepreneur" OR "startup"'
+  keywords:
+    - "career change"
+    - "entrepreneur"
+    - "startup"
+    - "business closure"
+    - "layoffs utah"
+    - "new career"
+    - "hiring"
+
+scraping:
+  rate_limit:
+    requests_per_minute: 10
+    delay_min: 3.0
+    delay_max: 8.0
+  schedule_minutes: 360
+  max_results_per_run: 100
+  headless: true
+
+selectors:
+  article_container: "article, div.post, div.entry, div.article-card"
+  title: "h2 a, h3 a, h1 a, a.entry-title"
+  description: "p.excerpt, div.entry-summary, div.post-excerpt"
+  author: "span.author, a.author, span.byline"
+  date: "time, span.date, span.published"

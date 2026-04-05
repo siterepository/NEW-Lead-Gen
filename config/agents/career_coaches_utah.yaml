@@ -1,0 +1,37 @@
+# Utah Career Coaches Agent
+# Scrapes Utah career coaching websites for client testimonials.
+
+agent:
+  name: career_coaches_utah
+  description: "Scrape Utah career coaching sites for client testimonials and career changers"
+  platform: content
+  category: content
+  enabled: true
+
+source:
+  google_queries:
+    - '"career coach" "utah" testimonials'
+    - '"career coach" "salt lake city" reviews'
+    - '"career coaching" "utah" client results'
+    - '"executive coach" "utah" testimonials'
+    - '"life coach" "career change" "utah"'
+    - '"resume writer" "utah" testimonials'
+    - '"career counselor" "utah" reviews'
+    - '"career transition coach" "utah"'
+  known_sites:
+    - "https://www.thumbtack.com/ut/salt-lake-city/career-counseling/"
+    - "https://www.yelp.com/search?find_desc=career+coaching&find_loc=Salt+Lake+City%2C+UT"
+
+scraping:
+  rate_limit:
+    requests_per_minute: 10
+    delay_min: 3.0
+    delay_max: 8.0
+  schedule_minutes: 720
+  max_results_per_run: 100
+  headless: true
+
+selectors:
+  testimonial: "div.testimonial, div.review, blockquote, div.client-story"
+  client_name: "cite, span.name, span.author, strong"
+  business_listing: "div.business-listing, div.search-result"

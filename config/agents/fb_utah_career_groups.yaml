@@ -1,0 +1,37 @@
+# Facebook Utah Career Groups Agent
+# Finds public Utah career/job Facebook groups via Google search.
+# NOTE: Only accesses publicly visible content. No Facebook login.
+
+agent:
+  name: fb_utah_career_groups
+  description: "Find public Utah career/job Facebook groups for manual monitoring"
+  platform: facebook
+  category: facebook
+  enabled: true
+
+source:
+  method: "google_search"
+  google_queries:
+    - 'site:facebook.com/groups "utah" "career"'
+    - 'site:facebook.com/groups "utah" "jobs"'
+    - 'site:facebook.com/groups "salt lake city" "career"'
+    - 'site:facebook.com/groups "utah" "job seekers"'
+    - 'site:facebook.com/groups "utah" "employment"'
+    - 'site:facebook.com/groups "utah" "hiring"'
+    - 'site:facebook.com/groups "utah" "career change"'
+    - 'site:facebook.com/groups "utah" "professional networking"'
+    - 'site:facebook.com/groups "utah county" "jobs"'
+    - 'site:facebook.com/groups "davis county" "jobs"'
+
+scraping:
+  rate_limit:
+    requests_per_minute: 8
+    delay_min: 3.0
+    delay_max: 10.0
+  schedule_minutes: 1440
+  max_results_per_run: 50
+  headless: true
+
+output:
+  requires_manual_monitoring: true
+  group_type: "career"

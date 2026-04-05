@@ -1,0 +1,47 @@
+# Reddit r/utah - Job Posts Agent
+# Monitors r/utah for job-related posts via Reddit JSON API.
+
+agent:
+  name: reddit_utah_jobs
+  description: "Monitor r/utah for job-related posts and career discussions"
+  platform: reddit
+  category: content
+  enabled: true
+
+source:
+  subreddit: "utah"
+  api_type: "json"
+  base_url: "https://www.reddit.com/r/utah"
+  search_queries:
+    - "hiring OR looking for work"
+    - "career OR opportunity"
+    - "job hunting OR job search"
+    - "new job OR career change"
+    - "business opportunity OR entrepreneur"
+    - "financial advisor OR financial planning"
+    - "sales career OR sales job"
+    - "self employed OR freelance"
+    - "side hustle OR second income"
+
+scraping:
+  rate_limit:
+    requests_per_minute: 15
+    delay_min: 2.0
+    delay_max: 5.0
+  schedule_minutes: 120
+  max_results_per_run: 100
+
+filters:
+  job_keywords:
+    - "hiring"
+    - "looking for work"
+    - "career"
+    - "opportunity"
+    - "job"
+    - "employment"
+    - "business"
+    - "entrepreneur"
+    - "financial advisor"
+    - "sales"
+    - "unemployed"
+  min_score: 0

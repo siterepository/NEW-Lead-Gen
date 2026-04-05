@@ -1,0 +1,50 @@
+# LinkedIn/Apollo Agent - Teachers Leaving Education
+# Searches Apollo for teachers/educators in Utah with career transitions.
+# Uses Apollo People Search API (free tier).
+
+agent:
+  name: linkedin_teachers_leaving
+  description: "Search Apollo for teachers/educators in Utah exploring career changes"
+  platform: linkedin_apollo
+  category: teachers
+  enabled: true
+
+source:
+  api: apollo_people_search
+  api_url: "https://api.apollo.io/api/v1/mixed_people/search"
+  search_params:
+    person_titles:
+      - "Teacher"
+      - "High School Teacher"
+      - "Elementary Teacher"
+      - "Educator"
+      - "Adjunct Professor"
+      - "Instructor"
+      - "School Counselor"
+      - "Academic Advisor"
+      - "Department Head"
+      - "Athletic Director"
+      - "Coach"
+      - "Former Teacher"
+      - "Education Consultant"
+    person_locations:
+      - "Utah, United States"
+    person_seniorities:
+      - "senior"
+      - "manager"
+      - "director"
+
+credits:
+  per_run_credit_limit: 5
+  results_per_page: 5
+  monthly_budget_share: 5  # Out of 60 total monthly credits
+
+scraping:
+  requests_per_minute: 5
+  delay_min: 1.0
+  delay_max: 2.0
+  schedule_minutes: 10080  # Weekly
+  max_results_per_run: 5
+
+filters:
+  require_utah_location: true

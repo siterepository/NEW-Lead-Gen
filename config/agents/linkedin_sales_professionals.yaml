@@ -1,0 +1,50 @@
+# LinkedIn/Apollo Agent - Sales Professionals
+# Searches Apollo for sales managers, AEs, and BDRs in Utah.
+# Uses Apollo People Search API (free tier).
+
+agent:
+  name: linkedin_sales_professionals
+  description: "Search Apollo for sales professionals in Utah"
+  platform: linkedin_apollo
+  category: sales_professionals
+  enabled: true
+
+source:
+  api: apollo_people_search
+  api_url: "https://api.apollo.io/api/v1/mixed_people/search"
+  search_params:
+    person_titles:
+      - "Sales Manager"
+      - "Account Executive"
+      - "Business Development Representative"
+      - "BDR"
+      - "SDR"
+      - "Sales Director"
+      - "Regional Sales Manager"
+      - "Account Manager"
+      - "Sales Representative"
+      - "VP of Sales"
+      - "Sales Consultant"
+      - "Outside Sales"
+      - "Inside Sales Manager"
+    person_locations:
+      - "Utah, United States"
+    person_seniorities:
+      - "senior"
+      - "manager"
+      - "director"
+
+credits:
+  per_run_credit_limit: 7
+  results_per_page: 7
+  monthly_budget_share: 7  # Out of 60 total monthly credits
+
+scraping:
+  requests_per_minute: 5
+  delay_min: 1.0
+  delay_max: 2.0
+  schedule_minutes: 10080  # Weekly
+  max_results_per_run: 7
+
+filters:
+  require_utah_location: true

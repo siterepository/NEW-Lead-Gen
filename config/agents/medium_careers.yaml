@@ -1,0 +1,34 @@
+# Medium Career Stories Agent
+# Searches Google for Medium articles about career changes by Utah authors.
+
+agent:
+  name: medium_careers
+  description: "Search Medium for career change stories by Utah authors"
+  platform: medium
+  category: content
+  enabled: true
+
+source:
+  google_queries:
+    - 'site:medium.com "utah" "career change" OR "new career"'
+    - 'site:medium.com "utah" "career transition"'
+    - 'site:medium.com "utah" "financial planning" OR "financial advisor"'
+    - 'site:medium.com "utah" "entrepreneur" OR "startup"'
+    - 'site:medium.com "salt lake city" "career change"'
+    - 'site:medium.com "salt lake city" "new job" OR "career"'
+    - 'site:medium.com "utah" "leaving corporate" OR "quit my job"'
+    - 'site:medium.com "utah" "side hustle" OR "freelance"'
+    - 'site:medium.com "utah" "business owner" OR "self employed"'
+    - 'site:medium.com "provo" OR "ogden" "career change"'
+
+scraping:
+  rate_limit:
+    requests_per_minute: 10
+    delay_min: 3.0
+    delay_max: 8.0
+  schedule_minutes: 360
+  max_results_per_run: 100
+  headless: true
+
+filters:
+  require_medium_url: true

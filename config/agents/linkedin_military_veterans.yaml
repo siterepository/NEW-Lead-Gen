@@ -1,0 +1,48 @@
+# LinkedIn/Apollo Agent - Military Veterans
+# Searches Apollo for military veterans transitioning to civilian careers in Utah.
+# Uses Apollo People Search API (free tier).
+
+agent:
+  name: linkedin_military_veterans
+  description: "Search Apollo for military veterans in Utah transitioning to civilian careers"
+  platform: linkedin_apollo
+  category: veterans
+  enabled: true
+
+source:
+  api: apollo_people_search
+  api_url: "https://api.apollo.io/api/v1/mixed_people/search"
+  search_params:
+    person_titles:
+      - "Veteran"
+      - "Military Veteran"
+      - "Transitioning Military"
+      - "Former Military"
+      - "Retired Military"
+      - "Army Veteran"
+      - "Navy Veteran"
+      - "Air Force Veteran"
+      - "Marine Veteran"
+      - "Military Officer"
+      - "NCO"
+      - "Squad Leader"
+      - "Platoon Leader"
+      - "Company Commander"
+      - "Military Transition"
+    person_locations:
+      - "Utah, United States"
+
+credits:
+  per_run_credit_limit: 5
+  results_per_page: 5
+  monthly_budget_share: 5  # Out of 60 total monthly credits
+
+scraping:
+  requests_per_minute: 5
+  delay_min: 1.0
+  delay_max: 2.0
+  schedule_minutes: 10080  # Weekly
+  max_results_per_run: 5
+
+filters:
+  require_utah_location: true

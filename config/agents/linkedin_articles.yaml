@@ -1,0 +1,36 @@
+# LinkedIn Articles Agent
+# Searches Google for LinkedIn articles by Utah authors about career topics.
+
+agent:
+  name: linkedin_articles
+  description: "Search for LinkedIn articles by Utah authors about career changes and financial planning"
+  platform: linkedin
+  category: content
+  enabled: true
+
+source:
+  google_queries:
+    - 'site:linkedin.com/pulse "utah" "career change"'
+    - 'site:linkedin.com/pulse "utah" "financial planning"'
+    - 'site:linkedin.com/pulse "utah" "entrepreneurship"'
+    - 'site:linkedin.com/pulse "utah" "career transition"'
+    - 'site:linkedin.com/pulse "salt lake city" "new career"'
+    - 'site:linkedin.com/pulse "utah" "leaving corporate"'
+    - 'site:linkedin.com/pulse "utah" "financial advisor"'
+    - 'site:linkedin.com/pulse "utah" "business owner"'
+    - 'site:linkedin.com/posts "utah" "career change"'
+    - 'site:linkedin.com/posts "utah" "new opportunity"'
+    - 'site:linkedin.com/posts "salt lake" "career"'
+    - 'site:linkedin.com/posts "utah" "financial planning"'
+
+scraping:
+  rate_limit:
+    requests_per_minute: 10
+    delay_min: 3.0
+    delay_max: 8.0
+  schedule_minutes: 360
+  max_results_per_run: 100
+  headless: true
+
+filters:
+  require_linkedin_url: true

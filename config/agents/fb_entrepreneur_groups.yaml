@@ -1,0 +1,36 @@
+# Facebook Utah Entrepreneur Groups Agent
+# Finds public Utah entrepreneur/startup Facebook groups via Google search.
+# NOTE: Only accesses publicly visible content. No Facebook login.
+
+agent:
+  name: fb_entrepreneur_groups
+  description: "Find public Utah entrepreneur/startup Facebook groups"
+  platform: facebook
+  category: facebook
+  enabled: true
+
+source:
+  method: "google_search"
+  google_queries:
+    - 'site:facebook.com/groups "utah" "entrepreneur"'
+    - 'site:facebook.com/groups "utah" "startup"'
+    - 'site:facebook.com/groups "utah" "small business"'
+    - 'site:facebook.com/groups "salt lake" "entrepreneur"'
+    - 'site:facebook.com/groups "utah" "business owners"'
+    - 'site:facebook.com/groups "utah" "founders"'
+    - 'site:facebook.com/groups "silicon slopes" "entrepreneur"'
+    - 'site:facebook.com/groups "utah" "side hustle"'
+    - 'site:facebook.com/groups "utah" "business networking"'
+
+scraping:
+  rate_limit:
+    requests_per_minute: 8
+    delay_min: 3.0
+    delay_max: 10.0
+  schedule_minutes: 1440
+  max_results_per_run: 50
+  headless: true
+
+output:
+  requires_manual_monitoring: true
+  group_type: "entrepreneur"

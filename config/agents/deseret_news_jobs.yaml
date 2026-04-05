@@ -1,0 +1,72 @@
+# Deseret News Jobs Agent
+# Scrapes Deseret News classifieds/jobs section for Utah career opportunities.
+# Major Utah publication - people using its classifieds are local and active.
+
+agent:
+  name: deseret_news_jobs
+  description: "Scrape Deseret News classifieds for Utah job seekers"
+  platform: deseret_news
+  category: job_boards
+  enabled: true
+
+source:
+  base_url: "https://www.deseret.com"
+  classifieds_url: "https://classifieds.deseret.com"
+  search_params:
+    location: "Utah"
+    categories:
+      - "jobs"
+      - "employment"
+      - "business-opportunities"
+      - "services"
+    keywords:
+      - "career opportunity"
+      - "sales"
+      - "financial"
+      - "business"
+      - "insurance"
+      - "real estate"
+      - "management"
+      - "employment"
+      - "hiring"
+      - "seeking professionals"
+
+scraping:
+  rate_limit:
+    requests_per_minute: 15
+    delay_min: 2.0
+    delay_max: 6.0
+  schedule_minutes: 90
+  max_pages: 8
+  max_results_per_run: 150
+
+selectors:
+  listing_container: "div.classified-listing, div.job-listing, article.listing"
+  title: "h2 a, h3 a, a.listing-title"
+  description: "p.description, div.listing-description"
+  location: "span.location, div.listing-location"
+  price: "span.price, div.listing-price"
+  date_posted: "span.date, time"
+  contact: "a[href^='tel:'], a[href^='mailto:']"
+  next_page: "a.next, a[rel='next'], li.next a"
+
+extraction:
+  fields:
+    - name: title
+      required: true
+    - name: description
+      required: false
+    - name: location
+      required: false
+    - name: date_posted
+      required: false
+    - name: contact_info
+      required: false
+
+filters:
+  min_description_length: 15
+  exclude_keywords:
+    - "scam"
+    - "MLM"
+    - "pyramid"
+  require_utah_location: true

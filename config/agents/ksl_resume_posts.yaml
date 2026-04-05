@@ -1,0 +1,78 @@
+# KSL Classifieds - Resume Posts Agent
+# Scrapes KSL classifieds for people posting resumes and jobs-wanted ads.
+
+agent:
+  name: ksl_resume_posts
+  description: "Scrape KSL classifieds for resume posts and jobs-wanted ads in Utah"
+  platform: ksl
+  category: resume_posts
+  enabled: true
+
+source:
+  base_url: "https://classifieds.ksl.com"
+  search_params:
+    categories:
+      - "Jobs"
+      - "Career-Services"
+      - "Services"
+    state: "Utah"
+    keywords:
+      - "resume"
+      - "jobs wanted"
+      - "seeking position"
+      - "available immediately"
+      - "hire me"
+      - "looking for employment"
+      - "experienced professional"
+      - "open to opportunities"
+      - "career transition"
+      - "seeking new role"
+      - "will relocate"
+      - "motivated professional"
+    sort: "newest"
+    zip: "84101"
+    miles: 100
+
+scraping:
+  rate_limit:
+    requests_per_minute: 20
+    delay_min: 2.0
+    delay_max: 8.0
+  schedule_minutes: 60
+  max_pages: 10
+  max_results_per_run: 200
+
+selectors:
+  listing_container: "div.listing-item, div.search-result, article.listing"
+  title: "h2.item-title a, h3.listing-title a, a.item-link"
+  description: "div.item-description, p.listing-description"
+  location: "span.item-location, span.listing-location"
+  date_posted: "span.item-date, time, span.listing-date"
+  contact_link: "a.contact-seller"
+  detail_url: "h2.item-title a::attr(href)"
+  phone: "span.phone-number, a[href^='tel:']"
+  image: "div.item-image img::attr(src)"
+  next_page: "a.pagination-next, a[rel='next']"
+
+extraction:
+  fields:
+    - name: title
+      required: true
+    - name: description
+      required: true
+    - name: location
+      required: false
+    - name: date_posted
+      required: false
+    - name: contact_info
+      required: false
+    - name: detail_url
+      required: true
+
+filters:
+  min_description_length: 20
+  exclude_keywords:
+    - "scam"
+    - "MLM"
+    - "pyramid"
+  require_utah_location: true

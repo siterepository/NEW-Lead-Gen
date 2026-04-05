@@ -1,0 +1,48 @@
+# Reddit r/SaltLakeCity - Career Posts Agent
+# Monitors r/SaltLakeCity for career-related posts via Reddit JSON API.
+
+agent:
+  name: reddit_slc_careers
+  description: "Monitor r/SaltLakeCity for career-related posts (job seeking, career change)"
+  platform: reddit
+  category: content
+  enabled: true
+
+source:
+  subreddit: "SaltLakeCity"
+  api_type: "json"
+  base_url: "https://www.reddit.com/r/SaltLakeCity"
+  search_queries:
+    - "career change OR new job"
+    - "looking for work OR job hunting"
+    - "hiring OR opportunity"
+    - "career advice OR career help"
+    - "leaving my job OR quit my job"
+    - "new career OR career transition"
+    - "financial advisor OR financial planning"
+    - "entrepreneur OR side hustle"
+    - "sales job OR sales career"
+
+scraping:
+  rate_limit:
+    requests_per_minute: 15
+    delay_min: 2.0
+    delay_max: 5.0
+  schedule_minutes: 120
+  max_results_per_run: 100
+
+filters:
+  career_keywords:
+    - "career"
+    - "job"
+    - "hiring"
+    - "work"
+    - "employment"
+    - "resume"
+    - "salary"
+    - "entrepreneur"
+    - "financial advisor"
+    - "sales"
+    - "quit"
+    - "laid off"
+  min_score: 0

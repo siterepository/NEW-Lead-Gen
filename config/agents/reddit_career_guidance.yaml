@@ -1,0 +1,48 @@
+# Reddit Career Guidance / Career Change Agent
+# Monitors r/careerguidance and r/careerchange for Utah users.
+
+agent:
+  name: reddit_career_guidance
+  description: "Monitor r/careerguidance and r/careerchange for Utah users in career transitions"
+  platform: reddit
+  category: content
+  enabled: true
+
+source:
+  subreddits:
+    - "careerguidance"
+    - "careerchange"
+  api_type: "json"
+  search_queries:
+    - "utah"
+    - "salt lake"
+    - "provo"
+    - "ogden"
+    - "utah county"
+    - "utah career"
+    - "financial advisor"
+    - "insurance career"
+    - "sales career utah"
+    - "leaving corporate"
+    - "career transition finance"
+
+scraping:
+  rate_limit:
+    requests_per_minute: 15
+    delay_min: 2.0
+    delay_max: 5.0
+  schedule_minutes: 180
+  max_results_per_run: 100
+
+filters:
+  utah_indicators:
+    - "utah"
+    - "salt lake"
+    - "slc"
+    - "provo"
+    - "ogden"
+    - "orem"
+    - "sandy"
+    - "lehi"
+    - "draper"
+  min_score: 0

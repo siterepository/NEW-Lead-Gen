@@ -1,0 +1,69 @@
+# Craigslist Salt Lake City - Gigs Agent
+# Scrapes CL SLC gigs section for people offering or seeking gig work.
+
+agent:
+  name: craigslist_slc_gigs
+  description: "Scrape Craigslist SLC gigs section for gig workers in Utah"
+  platform: craigslist
+  category: gigs
+  enabled: true
+
+source:
+  base_url: "https://saltlakecity.craigslist.org"
+  search_path: "/search/ggg"
+  search_params:
+    keywords:
+      - "sales"
+      - "marketing"
+      - "event"
+      - "business"
+      - "finance"
+      - "consulting"
+      - "coaching"
+      - "training"
+      - "customer service"
+      - "telemarketing"
+      - "commission"
+      - "networking"
+    sort: "date"
+
+scraping:
+  rate_limit:
+    requests_per_minute: 10
+    delay_min: 5.0
+    delay_max: 10.0
+  schedule_minutes: 120
+  max_pages: 5
+  max_results_per_run: 150
+
+selectors:
+  listing_container: "li.cl-static-search-result, li.result-row, ol.cl-static-search-results > li"
+  title: "a.titlestring, a.result-title, a.posting-title, a.cl-app-anchor"
+  description: "span.result-meta, div.meta"
+  location: "span.result-hood, span.nearby"
+  date_posted: "time.result-date, time, span.date"
+  price: "span.result-price, span.priceinfo"
+  image: "a.result-image img::attr(src)"
+  next_page: "a.button.next, a.cl-next-page, a[title='next page']"
+
+extraction:
+  fields:
+    - name: title
+      required: true
+    - name: description
+      required: false
+    - name: location
+      required: false
+    - name: price
+      required: false
+    - name: date_posted
+      required: false
+    - name: detail_url
+      required: true
+
+filters:
+  min_description_length: 10
+  exclude_keywords:
+    - "scam"
+    - "MLM"
+    - "pyramid"

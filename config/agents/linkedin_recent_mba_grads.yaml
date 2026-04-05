@@ -1,0 +1,47 @@
+# LinkedIn/Apollo Agent - Recent MBA Graduates
+# Searches Apollo for recent MBA graduates in the Utah area.
+# Uses Apollo People Search API (free tier).
+
+agent:
+  name: linkedin_recent_mba_grads
+  description: "Search Apollo for recent MBA graduates in Utah"
+  platform: linkedin_apollo
+  category: mba_graduates
+  enabled: true
+
+source:
+  api: apollo_people_search
+  api_url: "https://api.apollo.io/api/v1/mixed_people/search"
+  search_params:
+    person_titles:
+      - "MBA Candidate"
+      - "MBA Graduate"
+      - "Recent MBA"
+      - "MBA Student"
+      - "Business Analyst"
+      - "Financial Analyst"
+      - "Associate"
+      - "Strategy Analyst"
+      - "Management Consultant"
+      - "Business Development Associate"
+    person_locations:
+      - "Utah, United States"
+    person_seniorities:
+      - "entry"
+      - "senior"
+    q_keywords: "MBA"
+
+credits:
+  per_run_credit_limit: 5
+  results_per_page: 5
+  monthly_budget_share: 5  # Out of 60 total monthly credits
+
+scraping:
+  requests_per_minute: 5
+  delay_min: 1.0
+  delay_max: 2.0
+  schedule_minutes: 10080  # Weekly
+  max_results_per_run: 5
+
+filters:
+  require_utah_location: true

@@ -1,0 +1,72 @@
+# Utah Workforce Services Agent
+# Scrapes jobs.utah.gov for state workforce services listings.
+# People using government job services are actively seeking employment.
+
+agent:
+  name: utah_workforce
+  description: "Scrape Utah Workforce Services for active job seekers"
+  platform: utah_workforce
+  category: job_boards
+  enabled: true
+
+source:
+  base_url: "https://jobs.utah.gov"
+  search_params:
+    location: "Utah"
+    sort: "date"
+    keywords:
+      - "sales"
+      - "finance"
+      - "insurance"
+      - "business development"
+      - "account manager"
+      - "real estate"
+      - "customer service"
+      - "management"
+      - "marketing"
+      - "consulting"
+      - "advisor"
+      - "representative"
+    regions:
+      - "Salt Lake"
+      - "Utah"
+      - "Davis"
+      - "Weber"
+      - "Washington"
+      - "Cache"
+
+scraping:
+  rate_limit:
+    requests_per_minute: 15
+    delay_min: 2.0
+    delay_max: 6.0
+  schedule_minutes: 60
+  max_pages: 10
+  max_results_per_run: 200
+
+selectors:
+  listing_container: "div.job-listing, div.search-result-item, tr.clickable-row"
+  title: "a.job-title, h3.job-title a"
+  company: "span.company, span.employer"
+  location: "span.location, div.job-location"
+  salary: "span.salary, div.salary-range"
+  description: "div.description, p.snippet"
+  date_posted: "span.date, span.posted-date, time"
+  next_page: "a.next-page, a[aria-label='Next']"
+
+extraction:
+  fields:
+    - name: title
+      required: true
+    - name: company
+      required: false
+    - name: location
+      required: false
+    - name: salary
+      required: false
+    - name: description
+      required: false
+
+filters:
+  min_description_length: 10
+  require_utah_location: true

@@ -1,0 +1,47 @@
+# Reddit FIRE / Financial Independence - Utah Agent
+# Monitors r/financialindependence and r/Fire for Utah-based users.
+
+agent:
+  name: reddit_fire_utah
+  description: "Monitor FIRE subreddits for Utah-based users interested in financial planning"
+  platform: reddit
+  category: content
+  enabled: true
+
+source:
+  subreddits:
+    - "financialindependence"
+    - "Fire"
+  api_type: "json"
+  search_queries:
+    - "utah"
+    - "salt lake city"
+    - "provo"
+    - "ogden"
+    - "financial advisor utah"
+    - "utah FIRE"
+    - "utah retirement"
+    - "utah cost of living"
+    - "moving to utah"
+    - "utah financial planning"
+
+scraping:
+  rate_limit:
+    requests_per_minute: 15
+    delay_min: 2.0
+    delay_max: 5.0
+  schedule_minutes: 240
+  max_results_per_run: 100
+
+filters:
+  utah_indicators:
+    - "utah"
+    - "salt lake"
+    - "slc"
+    - "provo"
+    - "ogden"
+    - "orem"
+    - "sandy"
+    - "lehi"
+    - "draper"
+  min_score: 0

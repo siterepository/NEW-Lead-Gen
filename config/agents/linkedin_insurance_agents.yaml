@@ -1,0 +1,45 @@
+# LinkedIn/Apollo Agent - Insurance Agents
+# Searches Apollo for insurance agents in Utah.
+# Uses Apollo People Search API (free tier).
+
+agent:
+  name: linkedin_insurance_agents
+  description: "Search Apollo for insurance agents in Utah (already licensed)"
+  platform: linkedin_apollo
+  category: insurance
+  enabled: true
+
+source:
+  api: apollo_people_search
+  api_url: "https://api.apollo.io/api/v1/mixed_people/search"
+  search_params:
+    person_titles:
+      - "Insurance Agent"
+      - "Insurance Broker"
+      - "Licensed Insurance Agent"
+      - "Life Insurance Agent"
+      - "Health Insurance Agent"
+      - "Insurance Producer"
+      - "Insurance Advisor"
+      - "Insurance Sales Agent"
+      - "Insurance Consultant"
+      - "Property and Casualty Agent"
+      - "P&C Agent"
+      - "Insurance Account Manager"
+    person_locations:
+      - "Utah, United States"
+
+credits:
+  per_run_credit_limit: 7
+  results_per_page: 7
+  monthly_budget_share: 7  # Out of 60 total monthly credits
+
+scraping:
+  requests_per_minute: 5
+  delay_min: 1.0
+  delay_max: 2.0
+  schedule_minutes: 10080  # Weekly
+  max_results_per_run: 7
+
+filters:
+  require_utah_location: true

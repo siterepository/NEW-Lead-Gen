@@ -1,0 +1,43 @@
+# LinkedIn/Apollo Agent - Real Estate Agents
+# Searches Apollo for real estate agents and brokers in Utah.
+# Uses Apollo People Search API (free tier).
+
+agent:
+  name: linkedin_real_estate_agents
+  description: "Search Apollo for real estate agents and brokers in Utah"
+  platform: linkedin_apollo
+  category: real_estate
+  enabled: true
+
+source:
+  api: apollo_people_search
+  api_url: "https://api.apollo.io/api/v1/mixed_people/search"
+  search_params:
+    person_titles:
+      - "Real Estate Agent"
+      - "Realtor"
+      - "Real Estate Broker"
+      - "Licensed Real Estate Agent"
+      - "Real Estate Associate"
+      - "Buyer's Agent"
+      - "Listing Agent"
+      - "Real Estate Consultant"
+      - "Real Estate Advisor"
+      - "Managing Broker"
+    person_locations:
+      - "Utah, United States"
+
+credits:
+  per_run_credit_limit: 7
+  results_per_page: 7
+  monthly_budget_share: 7  # Out of 60 total monthly credits
+
+scraping:
+  requests_per_minute: 5
+  delay_min: 1.0
+  delay_max: 2.0
+  schedule_minutes: 10080  # Weekly
+  max_results_per_run: 7
+
+filters:
+  require_utah_location: true
