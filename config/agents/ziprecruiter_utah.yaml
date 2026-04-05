@@ -1,0 +1,67 @@
+# ZipRecruiter Utah Agent
+# Scrapes ZipRecruiter for Utah job seekers actively seeking career changes.
+
+agent:
+  name: ziprecruiter_utah
+  description: "Scrape ZipRecruiter for Utah job seekers"
+  platform: ziprecruiter
+  category: job_boards
+  enabled: true
+
+source:
+  base_url: "https://www.ziprecruiter.com"
+  search_params:
+    location: "Utah"
+    keywords:
+      - "career change"
+      - "financial advisor"
+      - "sales representative"
+      - "insurance agent"
+      - "business development"
+      - "real estate"
+      - "account manager"
+      - "independent contractor"
+      - "commission based"
+      - "wealth management"
+      - "financial planner"
+      - "entrepreneur"
+
+scraping:
+  rate_limit:
+    requests_per_minute: 10
+    delay_min: 3.0
+    delay_max: 8.0
+  schedule_minutes: 90
+  max_pages: 6
+  max_results_per_run: 150
+
+selectors:
+  listing_container: "article.job_result, div.job_content, div.job-listing"
+  title: "a.job_link, h2.job_title a"
+  company: "a.t_org_link, span.hiring_company"
+  location: "span.location, p.job_location"
+  salary: "span.salary, p.salary_estimate"
+  description: "p.job_snippet, div.job_snippet"
+  date_posted: "span.posted_date, time"
+  next_page: "a.next, a[title='Next'], li.next a"
+
+extraction:
+  fields:
+    - name: title
+      required: true
+    - name: company
+      required: false
+    - name: location
+      required: false
+    - name: salary
+      required: false
+    - name: description
+      required: false
+
+filters:
+  min_description_length: 10
+  exclude_keywords:
+    - "scam"
+    - "MLM"
+    - "pyramid"
+  require_utah_location: true

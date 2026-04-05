@@ -1,0 +1,68 @@
+# Utah DOPL Expired Licenses Agent
+# Scrapes Utah DOPL for recently expired professional licenses.
+# People whose licenses expired may be looking for career changes.
+
+agent:
+  name: expired_licenses
+  description: "Scrape Utah DOPL for expired professional license holders"
+  platform: utah_dopl
+  category: directories
+  enabled: true
+
+source:
+  base_url: "https://dopl.utah.gov"
+  search_url: "https://dopl.utah.gov/license-lookup"
+  search_params:
+    state: "UT"
+    statuses:
+      - "Expired"
+      - "Lapsed"
+      - "Inactive"
+    license_types:
+      - "Real Estate"
+      - "Insurance"
+      - "Securities"
+      - "Mortgage"
+      - "Financial"
+      - "Accounting"
+      - "Contractor"
+      - "Appraiser"
+
+scraping:
+  rate_limit:
+    requests_per_minute: 12
+    delay_min: 2.0
+    delay_max: 6.0
+  schedule_minutes: 180
+  max_pages: 10
+  max_results_per_run: 200
+
+selectors:
+  results_table: "table.license-results tbody tr, table#resultsTable tbody tr"
+  name: "td a, td:first-child"
+  license_number: "td.license-number, td:nth-child(2)"
+  profession: "td.profession, td:nth-child(3)"
+  status: "td.status, td:nth-child(4)"
+  expiration_date: "td.expiration-date, td:nth-child(5)"
+  city: "td.city, td:nth-child(6)"
+  next_page: "a.next, a[aria-label='Next']"
+
+extraction:
+  fields:
+    - name: name
+      required: true
+    - name: license_number
+      required: false
+    - name: profession
+      required: false
+    - name: license_status
+      required: true
+    - name: expiration_date
+      required: false
+
+filters:
+  allowed_statuses:
+    - "Expired"
+    - "Lapsed"
+    - "Inactive"
+    - "Revoked"

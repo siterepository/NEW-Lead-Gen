@@ -1,0 +1,79 @@
+# Real Estate Agent Directory Agent
+# Scrapes Utah real estate agent directories for agent listings.
+# Real estate agents are prime NWM recruits - commission-based, networked, entrepreneurial.
+
+agent:
+  name: real_estate_agents_dir
+  description: "Scrape Utah real estate agent directories for agent listings"
+  platform: real_estate_dir
+  category: directories
+  enabled: true
+
+source:
+  primary_url: "https://www.utahrealestate.com"
+  fallback_url: "https://www.realtor.com"
+  search_params:
+    areas:
+      - "Salt Lake County"
+      - "Utah County"
+      - "Davis County"
+      - "Weber County"
+      - "Washington County"
+      - "Cache County"
+      - "Summit County"
+      - "Iron County"
+      - "Tooele County"
+      - "Box Elder County"
+    cities:
+      - "Salt Lake City"
+      - "Provo"
+      - "Ogden"
+      - "Orem"
+      - "Sandy"
+      - "West Jordan"
+      - "St George"
+      - "Layton"
+      - "Logan"
+      - "Lehi"
+      - "Draper"
+      - "Park City"
+
+scraping:
+  rate_limit:
+    requests_per_minute: 12
+    delay_min: 2.0
+    delay_max: 6.0
+  schedule_minutes: 240
+  max_pages: 10
+  max_results_per_run: 200
+
+selectors:
+  listing_container: "div.agent-card, div.agent-listing, div.agent-info"
+  agent_name: "a.agent-name, h3.agent-name, span.agent-name"
+  brokerage: "span.brokerage, span.company, div.office-name"
+  phone: "a[href^='tel:'], span.phone, span.agent-phone"
+  email: "a[href^='mailto:'], span.email"
+  location: "span.location, div.service-area"
+  specialties: "span.specialties, div.agent-specialties"
+  listings_count: "span.listing-count, span.sales-count"
+  rating: "span.rating, div.agent-rating"
+  photo: "img.agent-photo, img.agent-image"
+  next_page: "a.next, a[aria-label='Next'], a[rel='next']"
+
+extraction:
+  fields:
+    - name: name
+      required: true
+    - name: brokerage
+      required: false
+    - name: phone
+      required: false
+    - name: email
+      required: false
+    - name: location
+      required: false
+    - name: specialties
+      required: false
+
+filters:
+  require_utah_location: true

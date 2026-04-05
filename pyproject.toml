@@ -11,7 +11,7 @@ license = "MIT"
 dependencies = [
     "crawlee[playwright]",
     "playwright",
-    "pydantic>=2.0",
+    "pydantic>=2.0,<2.12",
     "textblob",
     "rapidfuzz",
     "dynaconf",

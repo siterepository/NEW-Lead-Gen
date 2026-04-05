@@ -1,0 +1,36 @@
+# Facebook Utah Real Estate Professional Groups Agent
+# Finds public Utah real estate professional Facebook groups via Google search.
+# NOTE: Only accesses publicly visible content. No Facebook login.
+
+agent:
+  name: fb_real_estate_groups
+  description: "Find public Utah real estate professional Facebook groups"
+  platform: facebook
+  category: facebook
+  enabled: true
+
+source:
+  method: "google_search"
+  google_queries:
+    - 'site:facebook.com/groups "utah" "real estate"'
+    - 'site:facebook.com/groups "utah" "realtor"'
+    - 'site:facebook.com/groups "utah" "real estate agents"'
+    - 'site:facebook.com/groups "utah" "real estate investors"'
+    - 'site:facebook.com/groups "salt lake" "real estate"'
+    - 'site:facebook.com/groups "utah county" "real estate"'
+    - 'site:facebook.com/groups "utah" "property" "investing"'
+    - 'site:facebook.com/groups "utah" "mortgage" "professionals"'
+    - 'site:facebook.com/groups "utah" "real estate networking"'
+
+scraping:
+  rate_limit:
+    requests_per_minute: 8
+    delay_min: 3.0
+    delay_max: 10.0
+  schedule_minutes: 1440
+  max_results_per_run: 50
+  headless: true
+
+output:
+  requires_manual_monitoring: true
+  group_type: "real_estate"

@@ -1,0 +1,36 @@
+# Facebook Utah Job Seeker Support Groups Agent
+# Finds public Utah job seeker support Facebook groups via Google search.
+# NOTE: Only accesses publicly visible content. No Facebook login.
+
+agent:
+  name: fb_job_seeker_groups
+  description: "Find public Utah job seeker support Facebook groups"
+  platform: facebook
+  category: facebook
+  enabled: true
+
+source:
+  method: "google_search"
+  google_queries:
+    - 'site:facebook.com/groups "utah" "job seekers"'
+    - 'site:facebook.com/groups "utah" "looking for work"'
+    - 'site:facebook.com/groups "utah" "unemployment"'
+    - 'site:facebook.com/groups "utah" "job search"'
+    - 'site:facebook.com/groups "salt lake" "job seekers"'
+    - 'site:facebook.com/groups "utah" "career support"'
+    - 'site:facebook.com/groups "utah" "job help"'
+    - 'site:facebook.com/groups "utah" "employment support"'
+    - 'site:facebook.com/groups "utah county" "job seekers"'
+
+scraping:
+  rate_limit:
+    requests_per_minute: 8
+    delay_min: 3.0
+    delay_max: 10.0
+  schedule_minutes: 1440
+  max_results_per_run: 50
+  headless: true
+
+output:
+  requires_manual_monitoring: true
+  group_type: "job_seeker"

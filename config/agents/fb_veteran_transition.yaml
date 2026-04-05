@@ -1,0 +1,36 @@
+# Facebook Utah Veteran Career Transition Groups Agent
+# Finds public Utah veteran career transition Facebook groups via Google search.
+# NOTE: Only accesses publicly visible content. No Facebook login.
+
+agent:
+  name: fb_veteran_transition
+  description: "Find public Utah veteran career transition Facebook groups"
+  platform: facebook
+  category: facebook
+  enabled: true
+
+source:
+  method: "google_search"
+  google_queries:
+    - 'site:facebook.com/groups "utah" "veteran" "career"'
+    - 'site:facebook.com/groups "utah" "veteran" "transition"'
+    - 'site:facebook.com/groups "utah" "military" "career"'
+    - 'site:facebook.com/groups "utah" "veteran" "employment"'
+    - 'site:facebook.com/groups "salt lake" "veteran" "jobs"'
+    - 'site:facebook.com/groups "utah" "military transition"'
+    - 'site:facebook.com/groups "utah" "veteran" "networking"'
+    - 'site:facebook.com/groups "hill air force base" "career"'
+    - 'site:facebook.com/groups "utah" "military spouse" "career"'
+
+scraping:
+  rate_limit:
+    requests_per_minute: 8
+    delay_min: 3.0
+    delay_max: 10.0
+  schedule_minutes: 1440
+  max_results_per_run: 50
+  headless: true
+
+output:
+  requires_manual_monitoring: true
+  group_type: "veteran_transition"

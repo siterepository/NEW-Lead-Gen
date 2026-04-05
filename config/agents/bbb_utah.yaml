@@ -1,0 +1,74 @@
+# BBB Utah Agent
+# Scrapes Better Business Bureau Utah for businesses with complaints or low ratings.
+# Owners of struggling businesses may be open to career changes.
+
+agent:
+  name: bbb_utah
+  description: "Scrape BBB Utah for businesses with complaints or low ratings"
+  platform: bbb
+  category: directories
+  enabled: true
+
+source:
+  base_url: "https://www.bbb.org"
+  utah_url: "https://www.bbb.org/us/ut"
+  search_params:
+    country: "US"
+    state: "Utah"
+    categories:
+      - "insurance"
+      - "financial-services"
+      - "real-estate"
+      - "contractors"
+      - "sales"
+      - "marketing"
+      - "consulting"
+      - "auto-dealers"
+      - "home-improvement"
+      - "retail"
+    cities:
+      - "salt-lake-city"
+      - "provo"
+      - "ogden"
+      - "orem"
+      - "sandy"
+      - "west-jordan"
+      - "st-george"
+      - "layton"
+      - "logan"
+      - "lehi"
+
+scraping:
+  rate_limit:
+    requests_per_minute: 12
+    delay_min: 2.0
+    delay_max: 6.0
+  schedule_minutes: 180
+  max_pages: 8
+  max_results_per_run: 150
+
+selectors:
+  listing_container: "div.search-results div.result-item, li.search-result"
+  business_name: "a.text-blue-medium, h3.result-name a"
+  bbb_rating: "span.result-rating, span.bbb-rating"
+  complaint_count: "span.complaint-count, a.complaints-link"
+  location: "span.result-location, div.address"
+  phone: "a.result-phone, a[href^='tel:']"
+  category: "span.category, span.business-category"
+  next_page: "a.next, li.pagination-next a"
+
+extraction:
+  fields:
+    - name: business_name
+      required: true
+    - name: bbb_rating
+      required: false
+    - name: complaint_count
+      required: false
+    - name: location
+      required: false
+    - name: phone
+      required: false
+
+filters:
+  require_utah_location: true

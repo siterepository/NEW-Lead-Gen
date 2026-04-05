@@ -1,0 +1,70 @@
+# Utah Division of Corporations Agent
+# Scrapes secure.utah.gov/bes/ for new business filings.
+# New business owners are entrepreneurial - prime recruiting targets.
+
+agent:
+  name: ut_corporations
+  description: "Scrape Utah Division of Corporations for new business filings"
+  platform: utah_bes
+  category: directories
+  enabled: true
+
+source:
+  base_url: "https://secure.utah.gov/bes"
+  search_params:
+    state: "UT"
+    status: "Active"
+    entity_types:
+      - "LLC"
+      - "Corporation - Domestic"
+      - "Corporation - Professional"
+      - "DBA"
+    keywords:
+      - "consulting"
+      - "financial"
+      - "insurance"
+      - "real estate"
+      - "sales"
+      - "marketing"
+      - "coaching"
+      - "services"
+      - "management"
+      - "group"
+      - "solutions"
+      - "enterprise"
+
+scraping:
+  rate_limit:
+    requests_per_minute: 15
+    delay_min: 2.0
+    delay_max: 5.0
+  schedule_minutes: 120
+  max_pages: 10
+  max_results_per_run: 200
+
+selectors:
+  results_table: "table.searchResults tbody tr, table#searchResultsTable tbody tr"
+  business_name: "td a, a.entity-name"
+  entity_number: "td.entity-number, td:nth-child(2)"
+  entity_type: "td.entity-type, td:nth-child(3)"
+  status: "td.status, td:nth-child(4)"
+  filing_date: "td.filing-date, td:nth-child(5)"
+  registered_agent: "td.registered-agent, td:nth-child(6)"
+  next_page: "a.next, a[aria-label='Next']"
+
+extraction:
+  fields:
+    - name: business_name
+      required: true
+    - name: entity_number
+      required: false
+    - name: entity_type
+      required: false
+    - name: filing_date
+      required: false
+    - name: registered_agent
+      required: false
+
+filters:
+  entity_status: "Active"
+  recent_filings_only: true
