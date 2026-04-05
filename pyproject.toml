@@ -1,0 +1,47 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "leadgen"
+version = "0.1.0"
+description = "Automated lead generation pipeline with multi-agent scraping, scoring, and enrichment"
+requires-python = ">=3.9"
+license = "MIT"
+dependencies = [
+    "crawlee[playwright]",
+    "playwright",
+    "pydantic>=2.0",
+    "textblob",
+    "rapidfuzz",
+    "dynaconf",
+    "pyyaml",
+    "aiosqlite",
+    "httpx",
+    "supabase",
+    "python-dotenv",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+]
+
+[project.scripts]
+leadgen = "leadgen.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/leadgen"]
+
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

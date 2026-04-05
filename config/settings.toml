@@ -1,0 +1,61 @@
+[default]
+# Database
+database_url = "sqlite:///data/leadgen.db"
+supabase_url = "CHANGE_ME"
+supabase_key = "CHANGE_ME"
+
+# Logging
+log_level = "INFO"
+
+# Rate limiting
+requests_per_minute = 30
+delay_min = 2.0
+delay_max = 8.0
+
+# Scoring thresholds (0-100 scale)
+[default.scoring]
+tier_a = 75
+tier_b = 50
+tier_c = 25
+
+# Polling intervals (minutes)
+[default.polling]
+high_activity_mins = 15
+medium_activity_mins = 60
+low_activity_mins = 1440
+
+# API credit budgets (free tier monthly limits)
+[default.api_budgets]
+apollo_monthly = 60
+hunter_monthly = 25
+
+# Utah priority ZIP codes
+[default.geo]
+priority_zips = [
+    "84101", "84102", "84103", "84104", "84105",
+    "84106", "84107", "84108", "84109", "84111",
+    "84112", "84113", "84115", "84116", "84117",
+    "84118", "84119", "84120", "84121", "84123",
+    "84124", "84128", "84129", "84132", "84138",
+    "84144", "84150", "84180",
+    "84003", "84004", "84010", "84014", "84015",
+    "84020", "84025", "84037", "84040", "84041",
+    "84042", "84043", "84044", "84045", "84047",
+    "84057", "84058", "84060", "84062", "84065",
+    "84070", "84074", "84075", "84084", "84088",
+    "84092", "84093", "84094", "84095", "84096",
+    "84097", "84601", "84602", "84604", "84606",
+    "84651", "84660", "84663", "84664",
+    "84003", "84005", "84013", "84043", "84045",
+]
+priority_state = "UT"
+
+[development]
+log_level = "DEBUG"
+requests_per_minute = 10
+delay_min = 3.0
+delay_max = 12.0
+
+[production]
+log_level = "WARNING"
+requests_per_minute = 30
