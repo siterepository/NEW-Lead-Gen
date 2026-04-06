@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 from urllib.parse import quote_plus, urlencode
 
-from crawlee.playwright_crawler import PlaywrightCrawler, PlaywrightCrawlingContext
+import httpx
 
 from leadgen.agents.base import BaseAgent
 
@@ -126,103 +126,82 @@ class KSLJobSeekersAgent(BaseAgent):
     async def scrape(self) -> list[dict]:
         """Execute the main scraping logic against KSL Classifieds.
 
-        Workflow:
-        1. Build search URLs via get_search_urls().
-        2. For each URL, use Crawlee PlaywrightCrawler to load the page.
-        3. Extract listing cards from the results.
-        4. Handle pagination (up to self.max_pages per search URL).
-        5. Respect rate limits with random delays.
-        6. De-duplicate against last_seen records.
-        7. Return list of raw listing dicts.
+        Uses httpx to fetch KSL pages and extracts listing data from
+        the embedded Next.js RSC payload (no browser rendering needed).
         """
         all_items: list[dict] = []
         search_urls = self.get_search_urls()
+        max_urls = self.config.get("max_pages", 5)
 
-        crawler = await self.setup_browser()
+        headers = {
+            "User-Agent": self.get_random_user_agent(),
+            "Accept": "text/html,application/xhtml+xml",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
 
-        # Shared state across the request handler closures
-        collected: list[dict] = []
-
-        @crawler.router.default_handler
-        async def handle_listing_page(context: PlaywrightCrawlingContext) -> None:
-            """Process a single search-results page."""
-            page = context.page
-            await self.apply_stealth(page)
-
-            # Wait for listing cards to appear
-            try:
-                await page.wait_for_selector(
-                    "div.listing-item, div.search-result, article.listing",
-                    timeout=15_000,
-                )
-            except Exception:
-                logger.debug(
-                    "[%s] No listings found on %s", self.name, context.request.url
-                )
-                return
-
-            # Extract all listing cards on the page
-            cards = await page.query_selector_all(
-                "div.listing-item, div.search-result, article.listing"
-            )
-
-            for card in cards:
-                if len(collected) >= self.max_results_per_run:
+        async with httpx.AsyncClient(
+            follow_redirects=True, timeout=30, headers=headers
+        ) as client:
+            for i, url in enumerate(search_urls[:max_urls]):
+                if len(all_items) >= self.max_results_per_run:
                     break
 
+                await self.rate_limiter.acquire()
+                delay = self.get_random_delay()
+                await asyncio.sleep(delay)
+
                 try:
-                    raw = await self._extract_card(card, page)
-                    if raw:
-                        # Skip already-seen listings
-                        listing_url = raw.get("url", "")
-                        if listing_url:
-                            last = await self.check_last_seen(listing_url)
-                            post_id = raw.get("post_id", "")
-                            if last and last == post_id:
-                                continue
+                    resp = await client.get(url)
+                    if resp.status_code != 200:
+                        logger.warning(
+                            "[%s] HTTP %d for %s", self.name, resp.status_code, url
+                        )
+                        continue
 
-                        collected.append(raw)
+                    # Extract listings from Next.js RSC embedded data
+                    ids = re.findall(r'\\?"id\\?":\s*(\d{7,})', resp.text)
+                    titles = re.findall(
+                        r'\\?"title\\?":\\?"((?:[^\\]|\\.)*?)\\?"', resp.text
+                    )
+                    cities = re.findall(
+                        r'\\?"city\\?":\\?"((?:[^\\]|\\.)*?)\\?"', resp.text
+                    )
+                    prices = re.findall(
+                        r'\\?"price\\?":\\?"((?:[^\\]|\\.)*?)\\?"', resp.text
+                    )
+
+                    for j, title in enumerate(titles):
+                        if len(all_items) >= self.max_results_per_run:
+                            break
+                        clean_title = title.replace('\\"', '"').replace("\\\\", "\\")
+                        lid = ids[j] if j < len(ids) else ""
+                        city = (
+                            cities[j].replace('\\"', "") if j < len(cities) else ""
+                        )
+                        price = (
+                            prices[j].replace('\\"', "") if j < len(prices) else ""
+                        )
+
+                        all_items.append({
+                            "post_id": lid,
+                            "title": clean_title,
+                            "location_city": city,
+                            "location_state": "Utah",
+                            "price": price,
+                            "source_url": f"{BASE_URL}/listing/{lid}" if lid else url,
+                            "platform": "ksl",
+                            "category": "services",
+                            "scraped_at": datetime.now(timezone.utc).isoformat(),
+                        })
+
+                    logger.info(
+                        "[%s] URL %d/%d: %d listings from %s",
+                        self.name, i + 1, min(len(search_urls), max_urls),
+                        len(titles), url[:80],
+                    )
+
                 except Exception as exc:
-                    logger.warning(
-                        "[%s] Failed to extract card: %s", self.name, exc
-                    )
-
-            # Handle pagination -- look for "next page" link
-            next_btn = await page.query_selector(
-                "a.pagination-next, a[rel='next'], a.next-page, "
-                "button.pagination-next"
-            )
-            if next_btn and len(collected) < self.max_results_per_run:
-                next_href = await next_btn.get_attribute("href")
-                if next_href:
-                    if not next_href.startswith("http"):
-                        next_href = f"{BASE_URL}{next_href}"
-                    # Rate-limit before following pagination
-                    await self.rate_limiter.acquire()
-                    delay = self.get_random_delay()
-                    await asyncio.sleep(delay)
-                    await context.enqueue_links(
-                        urls=[next_href],
-                    )
-
-        # Enqueue all search URLs with rate limiting
-        urls_to_crawl: list[str] = []
-        pages_per_url = 0
-
-        for url in search_urls:
-            if len(collected) >= self.max_results_per_run:
-                break
-
-            await self.rate_limiter.acquire()
-            delay = self.get_random_delay()
-            await asyncio.sleep(delay)
-            urls_to_crawl.append(url)
-
-        # Run the crawler
-        if urls_to_crawl:
-            await crawler.run(urls_to_crawl)
-
-        all_items = collected
+                    logger.warning("[%s] Error fetching %s: %s", self.name, url[:60], exc)
         logger.info(
             "[%s] Scrape complete: %d raw items collected", self.name, len(all_items)
         )

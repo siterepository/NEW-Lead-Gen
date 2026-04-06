@@ -16,7 +16,13 @@ from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from crawlee.playwright_crawler import PlaywrightCrawler, PlaywrightCrawlingContext
+try:
+    from crawlee.playwright_crawler import PlaywrightCrawler, PlaywrightCrawlingContext
+except ImportError:
+    PlaywrightCrawler = None  # type: ignore
+    PlaywrightCrawlingContext = None  # type: ignore
+
+import httpx
 
 logger = logging.getLogger(__name__)
 

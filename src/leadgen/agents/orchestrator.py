@@ -20,7 +20,26 @@ from leadgen.pipeline.normalizer import Normalizer
 from leadgen.pipeline.deduplicator import Deduplicator
 from leadgen.db.queue import JobQueue
 
+# Import all agent classes for auto-registration
+from leadgen.agents.ksl import (
+    KSLJobSeekersAgent, KSLServicesOfferedAgent, KSLBusinessForSaleAgent,
+    KSLResumePostsAgent, KSLCareerServicesAgent, KSLGigWorkersAgent,
+    KSLProfessionalServicesAgent, KSLCoachingConsultingAgent,
+)
+
 logger = logging.getLogger(__name__)
+
+# Map of platform+name to agent class for lookup
+_ALL_AGENTS: dict[str, type] = {
+    "ksl_job_seekers": KSLJobSeekersAgent,
+    "ksl_services_offered": KSLServicesOfferedAgent,
+    "ksl_business_for_sale": KSLBusinessForSaleAgent,
+    "ksl_resume_posts": KSLResumePostsAgent,
+    "ksl_career_services": KSLCareerServicesAgent,
+    "ksl_gig_workers": KSLGigWorkersAgent,
+    "ksl_professional_services": KSLProfessionalServicesAgent,
+    "ksl_coaching_consulting": KSLCoachingConsultingAgent,
+}
 
 
 class Orchestrator:
@@ -103,25 +122,28 @@ class Orchestrator:
         logger.info("Running agent: %s (platform=%s)", agent_name, platform)
 
         try:
-            # Look up agent class from registry
-            agent_cls = self._agent_registry.get(platform)
+            # Look up agent class by name first, then by platform
+            agent_cls = _ALL_AGENTS.get(agent_name) or self._agent_registry.get(platform)
             if agent_cls is None:
                 logger.warning(
-                    "No agent class registered for platform '%s'. "
+                    "No agent class registered for '%s' (platform '%s'). "
                     "Register via Orchestrator.register_agent().",
-                    platform,
+                    agent_name, platform,
                 )
                 run.status = "error"
-                run.error_message = f"No agent class for platform: {platform}"
+                run.error_message = f"No agent class for: {agent_name}"
                 self._update_status(agent_name, run)
                 return
 
-            agent_instance = agent_cls(
-                name=agent_name,
-                platform=platform,
-                config=config,
-                db=self.db,
-            )
+            # Try (config, db) signature first (KSL agents),
+            # fall back to (name, platform, config, db) for BaseAgent direct
+            try:
+                agent_instance = agent_cls(config=config, db=self.db)
+            except TypeError:
+                agent_instance = agent_cls(
+                    name=agent_name, platform=platform,
+                    config=config, db=self.db,
+                )
             raw_scrapes = await agent_instance.run()
 
             # BaseAgent.run() returns None (stores internally) or list[dict]
