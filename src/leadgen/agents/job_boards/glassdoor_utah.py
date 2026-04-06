@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 from urllib.parse import urlencode, quote_plus
 
-from crawlee.playwright_crawler import PlaywrightCrawler, PlaywrightCrawlingContext
+import httpx
 
 from leadgen.agents.base import BaseAgent
 
@@ -95,138 +95,65 @@ class GlassdoorUtahAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     async def scrape(self) -> list[dict]:
-        """Scrape Glassdoor Utah reviews for dissatisfied employees."""
-        collected: list[dict] = []
+        """Fetch listing pages with httpx and extract items via regex."""
         search_urls = self.get_search_urls()
-        crawler = await self.setup_browser()
+        collected: list[dict] = []
+        headers = {"User-Agent": self.get_random_user_agent()}
 
-        @crawler.router.default_handler
-        async def handle_page(context: PlaywrightCrawlingContext) -> None:
-            page = context.page
-            await self.apply_stealth(page)
-
-            # Wait for company/review cards
-            try:
-                await page.wait_for_selector(
-                    "div[data-test='employer-card-single'], "
-                    "div.single-company-result, "
-                    "div.eiCell, div.review-container",
-                    timeout=20_000,
-                )
-            except Exception:
-                logger.debug(
-                    "[%s] No review cards on %s", self.name, context.request.url
-                )
-                return
-
-            # Extract company cards from search results
-            cards = await page.query_selector_all(
-                "div[data-test='employer-card-single'], "
-                "div.single-company-result, div.eiCell"
-            )
-
-            for card in cards:
+        async with httpx.AsyncClient(
+            headers=headers, follow_redirects=True, timeout=30.0
+        ) as client:
+            for url in search_urls:
                 if len(collected) >= self.max_results_per_run:
                     break
+                await self.rate_limiter.acquire()
+                await asyncio.sleep(self.get_random_delay())
+
                 try:
-                    raw = await self._extract_company_card(card, page)
-                    if raw:
-                        # Filter to low-rated companies
-                        rating = raw.get("rating", 5.0)
-                        try:
-                            if float(rating) > LOW_RATING_THRESHOLD:
-                                continue
-                        except (ValueError, TypeError):
-                            pass
-                        collected.append(raw)
-                except Exception as exc:
-                    logger.warning("[%s] Card extraction error: %s", self.name, exc)
+                    resp = await client.get(url)
+                    resp.raise_for_status()
+                    html = resp.text
+                except httpx.HTTPError as exc:
+                    logger.warning("[%s] HTTP error for %s: %s", self.name, url, exc)
+                    continue
 
-        # Enqueue with rate limiting
-        urls_to_crawl: list[str] = []
-        for url in search_urls:
-            if len(collected) >= self.max_results_per_run:
-                break
-            await self.rate_limiter.acquire()
-            await asyncio.sleep(self.get_random_delay())
-            urls_to_crawl.append(url)
+                items = self._parse_html(html, url)
+                for item in items:
+                    if len(collected) >= self.max_results_per_run:
+                        break
+                    collected.append(item)
 
-        if urls_to_crawl:
-            await crawler.run(urls_to_crawl)
-
-        logger.info("[%s] Collected %d raw items", self.name, len(collected))
+        logger.info("[%s] Scrape complete: %d raw items", self.name, len(collected))
         return collected
 
-    # ------------------------------------------------------------------
-    # Card extraction
-    # ------------------------------------------------------------------
+    def _parse_html(self, html: str, source_url: str) -> list[dict]:
+        """Extract company review cards from Glassdoor HTML via regex."""
+        items: list[dict] = []
+        # Glassdoor company links: /Reviews/<company>-Reviews-...htm
+        for m in re.finditer(
+            r'<a[^>]+href="(/Reviews/[^"]+\.htm)"[^>]*>([^<]{3,})</a>',
+            html,
+        ):
+            href, company = m.group(1), m.group(2).strip()
+            url = f"{BASE_URL}{href}" if not href.startswith("http") else href
+            # Try to extract rating nearby
+            rating = ""
+            context = html[max(0, m.start()-200):m.end()+200]
+            rating_match = re.search(r'(\d\.\d)', context)
+            if rating_match:
+                rating = rating_match.group(1)
+            items.append({
+                "company": company,
+                "url": url,
+                "rating": rating,
+                "review_count": "",
+                "location": "",
+                "industry": "",
+                "review_snippet": "",
+                "post_id": url,
+            })
+        return items
 
-    async def _extract_company_card(
-        self, card: Any, page: Any
-    ) -> Optional[dict]:
-        """Extract data from a Glassdoor company/review card."""
-        raw: dict[str, Any] = {}
-
-        # Company name
-        name_el = await card.query_selector(
-            "h2 a.eiCell-master-wrap, a[data-test='cell-Reviews-url'], "
-            "h2.employerName, a.employerName"
-        )
-        if name_el:
-            raw["company"] = (await name_el.inner_text()).strip()
-            href = await name_el.get_attribute("href")
-            if href:
-                if not href.startswith("http"):
-                    href = f"{BASE_URL}{href}"
-                raw["url"] = href
-        else:
-            return None
-
-        # Overall rating
-        rating_el = await card.query_selector(
-            "span[data-test='rating'], span.ratingNumber, "
-            "span.bigRating, span.rating"
-        )
-        if rating_el:
-            raw["rating"] = (await rating_el.inner_text()).strip()
-
-        # Number of reviews
-        reviews_el = await card.query_selector(
-            "span[data-test='cell-Reviews-count'], "
-            "span.reviewCount, a.eiCell-master-count"
-        )
-        if reviews_el:
-            raw["review_count"] = (await reviews_el.inner_text()).strip()
-
-        # Location
-        loc_el = await card.query_selector(
-            "span.loc, span.employer-location, "
-            "span[data-test='employer-location']"
-        )
-        if loc_el:
-            raw["location"] = (await loc_el.inner_text()).strip()
-
-        # Industry
-        ind_el = await card.query_selector(
-            "span.industry, span[data-test='employer-industry']"
-        )
-        if ind_el:
-            raw["industry"] = (await ind_el.inner_text()).strip()
-
-        # Review snippet (cons / negative highlights)
-        snippet_el = await card.query_selector(
-            "div.review-snippet, p.reviewSnippet, "
-            "span[data-test='review-snippet']"
-        )
-        if snippet_el:
-            raw["review_snippet"] = (await snippet_el.inner_text()).strip()
-
-        # Post ID for dedup
-        raw["post_id"] = raw.get("url", raw.get("company", ""))
-
-        return raw
-
-    # ------------------------------------------------------------------
     # parse_item
     # ------------------------------------------------------------------
 

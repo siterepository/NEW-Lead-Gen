@@ -12,10 +12,10 @@ import asyncio
 import logging
 import re
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import urlencode
 
-from crawlee.playwright_crawler import PlaywrightCrawler, PlaywrightCrawlingContext
+import httpx
 
 from leadgen.agents.base import BaseAgent
 
@@ -90,134 +90,149 @@ class CraigslistSLCBusinessAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     async def scrape(self) -> list[dict]:
-        """Scrape Craigslist SLC business-for-sale listings."""
+        """Scrape Craigslist SLC business-for-sale listings.
+
+        Uses httpx to fetch pages and regex to parse the server-rendered
+        HTML (no browser needed -- CL is fully SSR).
+        """
+        all_items: list[dict] = []
         search_urls = self.get_search_urls()
-        crawler = await self.setup_browser()
-        collected: list[dict] = []
+        max_urls = self.config.get("max_pages", 5)
 
-        @crawler.router.default_handler
-        async def handle_listing_page(context: PlaywrightCrawlingContext) -> None:
-            page = context.page
-            await self.apply_stealth(page)
+        headers = {
+            "User-Agent": self.get_random_user_agent(),
+            "Accept": "text/html,application/xhtml+xml",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
 
-            try:
-                await page.wait_for_selector(
-                    "li.cl-static-search-result, li.result-row, "
-                    "div.result-info, ol.cl-static-search-results > li",
-                    timeout=15_000,
-                )
-            except Exception:
-                logger.debug("[%s] No results on %s", self.name, context.request.url)
-                return
-
-            rows = await page.query_selector_all(
-                "li.cl-static-search-result, li.result-row, "
-                "ol.cl-static-search-results > li"
-            )
-
-            for row in rows:
-                if len(collected) >= self.max_results_per_run:
+        async with httpx.AsyncClient(
+            follow_redirects=True, timeout=30, headers=headers
+        ) as client:
+            for i, url in enumerate(search_urls[:max_urls]):
+                if len(all_items) >= self.max_results_per_run:
                     break
+
+                await self.rate_limiter.acquire()
+                delay = self.get_random_delay()
+                await asyncio.sleep(delay)
+
                 try:
-                    raw = await self._extract_row(row, page)
-                    if raw:
-                        listing_url = raw.get("url", "")
-                        if listing_url:
-                            last = await self.check_last_seen(listing_url)
-                            post_id = raw.get("post_id", "")
-                            if last and last == post_id:
-                                continue
-                        collected.append(raw)
+                    resp = await client.get(url)
+                    if resp.status_code != 200:
+                        logger.warning(
+                            "[%s] HTTP %d for %s", self.name, resp.status_code, url
+                        )
+                        continue
+
+                    html = resp.text
+                    items = self._parse_listings(html)
+
+                    for item in items:
+                        if len(all_items) >= self.max_results_per_run:
+                            break
+                        all_items.append(item)
+
+                    logger.info(
+                        "[%s] URL %d/%d: %d listings from %s",
+                        self.name, i + 1, min(len(search_urls), max_urls),
+                        len(items), url[:80],
+                    )
+
                 except Exception as exc:
-                    logger.warning("[%s] Row extraction failed: %s", self.name, exc)
+                    logger.warning("[%s] Error fetching %s: %s", self.name, url[:60], exc)
 
-            next_btn = await page.query_selector(
-                "a.button.next, a.cl-next-page, "
-                "button.bd-button.cl-next-page, a[title='next page']"
+        logger.info(
+            "[%s] Scrape complete: %d raw items collected", self.name, len(all_items)
+        )
+        return all_items
+
+    # ------------------------------------------------------------------
+    # HTML parsing helpers
+    # ------------------------------------------------------------------
+
+    def _parse_listings(self, html: str) -> list[dict]:
+        """Extract listings from Craigslist server-rendered HTML via regex."""
+        items: list[dict] = []
+
+        row_pattern = re.compile(
+            r'<li[^>]*class="[^"]*(?:cl-static-search-result|result-row)[^"]*"[^>]*>'
+            r'(.*?)</li>',
+            re.DOTALL,
+        )
+
+        for m in row_pattern.finditer(html):
+            block = m.group(0)
+
+            # -- Title + URL --
+            title_match = re.search(
+                r'<a[^>]*class="[^"]*(?:titlestring|result-title|cl-app-anchor)[^"]*"'
+                r'[^>]*href="([^"]*)"[^>]*>(.*?)</a>',
+                block, re.DOTALL,
             )
-            if next_btn and len(collected) < self.max_results_per_run:
-                next_href = await next_btn.get_attribute("href")
-                if next_href:
-                    if not next_href.startswith("http"):
-                        next_href = f"{BASE_URL}{next_href}"
-                    await self.rate_limiter.acquire()
-                    await asyncio.sleep(self.get_random_delay())
-                    await context.enqueue_links(urls=[next_href])
+            if not title_match:
+                title_match = re.search(
+                    r'<a[^>]*href="([^"]*)"[^>]*>(.*?)</a>',
+                    block, re.DOTALL,
+                )
+            if not title_match:
+                continue
 
-        urls_to_crawl: list[str] = []
-        for url in search_urls:
-            if len(collected) >= self.max_results_per_run:
-                break
-            await self.rate_limiter.acquire()
-            await asyncio.sleep(self.get_random_delay())
-            urls_to_crawl.append(url)
+            href = title_match.group(1).strip()
+            title = re.sub(r'<[^>]+>', '', title_match.group(2)).strip()
+            if not title:
+                continue
 
-        if urls_to_crawl:
-            await crawler.run(urls_to_crawl)
+            url = href if href.startswith("http") else f"{BASE_URL}{href}"
 
-        logger.info("[%s] Scrape complete: %d raw items", self.name, len(collected))
-        return collected
+            # -- Price --
+            price = ""
+            price_match = re.search(
+                r'<span[^>]*class="[^"]*(?:priceinfo|result-price)[^"]*"[^>]*>'
+                r'(.*?)</span>',
+                block, re.DOTALL,
+            )
+            if price_match:
+                price = re.sub(r'<[^>]+>', '', price_match.group(1)).strip()
 
-    # ------------------------------------------------------------------
-    # Row extraction
-    # ------------------------------------------------------------------
+            # -- Location --
+            location = ""
+            loc_match = re.search(
+                r'<span[^>]*class="[^"]*(?:result-hood|nearby|supertitle)[^"]*"[^>]*>'
+                r'(.*?)</span>',
+                block, re.DOTALL,
+            )
+            if loc_match:
+                location = re.sub(r'<[^>]+>', '', loc_match.group(1)).strip().strip("() ")
 
-    async def _extract_row(self, row: Any, page: Any) -> Optional[dict]:
-        """Extract structured data from a single CL result row."""
-        raw: dict[str, Any] = {}
+            # -- Date --
+            posted_date = ""
+            date_match = re.search(
+                r'<time[^>]*datetime="([^"]*)"', block
+            )
+            if date_match:
+                posted_date = date_match.group(1).strip()
 
-        title_el = await row.query_selector(
-            "a.titlestring, a.result-title, a.posting-title, "
-            "div.title a, a.cl-app-anchor"
-        )
-        if title_el:
-            raw["title"] = (await title_el.inner_text()).strip()
-            href = await title_el.get_attribute("href")
-            if href:
-                raw["url"] = href if href.startswith("http") else f"{BASE_URL}{href}"
-        else:
-            return None
+            # -- Post ID from URL --
+            post_id = ""
+            id_match = re.search(r'/(\d+)\.html', url)
+            if id_match:
+                post_id = id_match.group(1)
 
-        meta_el = await row.query_selector(
-            "span.result-meta, div.meta, span.result-hood"
-        )
-        if meta_el:
-            raw["meta"] = (await meta_el.inner_text()).strip()
+            items.append({
+                "title": title,
+                "url": url,
+                "source_url": url,
+                "post_id": post_id or url,
+                "price": price,
+                "location": location,
+                "posted_date_iso": posted_date,
+                "posted_date": posted_date,
+                "platform": "craigslist",
+                "category": "business_for_sale",
+                "scraped_at": datetime.now(timezone.utc).isoformat(),
+            })
 
-        date_el = await row.query_selector(
-            "time.result-date, time, span.date, div.meta span.date"
-        )
-        if date_el:
-            raw["posted_date"] = (await date_el.inner_text()).strip()
-            dt_attr = await date_el.get_attribute("datetime")
-            if dt_attr:
-                raw["posted_date_iso"] = dt_attr
-            title_attr = await date_el.get_attribute("title")
-            if title_attr and not raw.get("posted_date_iso"):
-                raw["posted_date_iso"] = title_attr
-
-        loc_el = await row.query_selector(
-            "span.result-hood, span.nearby, span.supertitle"
-        )
-        if loc_el:
-            loc_text = (await loc_el.inner_text()).strip()
-            raw["location"] = loc_text.strip("() ")
-
-        price_el = await row.query_selector("span.result-price, span.priceinfo")
-        if price_el:
-            raw["price"] = (await price_el.inner_text()).strip()
-
-        if raw.get("url"):
-            match = re.search(r"/(\d+)\.html", raw["url"])
-            raw["post_id"] = match.group(1) if match else raw["url"]
-        elif raw.get("title"):
-            raw["post_id"] = raw["title"]
-
-        img_el = await row.query_selector("img, a.result-image img")
-        if img_el:
-            raw["image_url"] = await img_el.get_attribute("src")
-
-        return raw
+        return items
 
     # ------------------------------------------------------------------
     # parse_item

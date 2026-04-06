@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 from urllib.parse import quote_plus, urlencode
 
-from crawlee.playwright_crawler import PlaywrightCrawler, PlaywrightCrawlingContext
+import httpx
 
 from leadgen.agents.base import BaseAgent
 
@@ -85,117 +85,84 @@ class LinkedInArticlesAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     async def scrape(self) -> list[dict]:
-        """Scrape Google search results for LinkedIn articles."""
-        all_items: list[dict] = []
-        crawler = await self.setup_browser()
+        """Fetch listing pages with httpx and extract items via regex."""
+        search_urls = self.get_search_urls()
         collected: list[dict] = []
+        headers = {"User-Agent": self.get_random_user_agent()}
 
-        @crawler.router.default_handler
-        async def handle_page(context: PlaywrightCrawlingContext) -> None:
-            page = context.page
-            await self.apply_stealth(page)
-
-            try:
-                await page.wait_for_load_state("domcontentloaded", timeout=15_000)
-            except Exception:
-                return
-
-            # Extract Google search results
-            results = await page.query_selector_all("div.g")
-            for result in results:
+        async with httpx.AsyncClient(
+            headers=headers, follow_redirects=True, timeout=30.0
+        ) as client:
+            for url in search_urls:
                 if len(collected) >= self.max_results_per_run:
                     break
+                await self.rate_limiter.acquire()
+                await asyncio.sleep(self.get_random_delay())
+
                 try:
-                    link_el = await result.query_selector("a[href]")
-                    if not link_el:
-                        continue
+                    resp = await client.get(url)
+                    resp.raise_for_status()
+                    html = resp.text
+                except httpx.HTTPError as exc:
+                    logger.warning("[%s] HTTP error for %s: %s", self.name, url, exc)
+                    continue
 
-                    href = await link_el.get_attribute("href") or ""
+                items = self._parse_html(html, url)
+                for item in items:
+                    if len(collected) >= self.max_results_per_run:
+                        break
+                    collected.append(item)
 
-                    # Only keep LinkedIn URLs
-                    if "linkedin.com" not in href:
-                        continue
+        logger.info("[%s] Scrape complete: %d raw items", self.name, len(collected))
+        return collected
 
-                    title_el = await result.query_selector("h3")
-                    title = ""
-                    if title_el:
-                        title = (await title_el.inner_text()).strip()
+    def _parse_html(self, html: str, source_url: str) -> list[dict]:
+        """Extract article links from blog / content site HTML via regex."""
+        items: list[dict] = []
+        if "google.com/search" in source_url:
+            # Google search results
+            for m in re.finditer(
+                r'<a[^>]+href="(https?://(?!www\.google)[^"]+)"[^>]*>'
+                r'(?:<h3[^>]*>([^<]+)</h3>)?',
+                html,
+            ):
+                href = m.group(1)
+                title = m.group(2).strip() if m.group(2) else ""
+                if "/search" in href or not title:
+                    continue
+                items.append({
+                    "title": title,
+                    "url": href,
+                    "source": "google_search",
+                    "description": "",
+                    "author": "",
+                    "posted_date": "",
+                    "post_id": href,
+                })
+        else:
+            # Blog / article pages
+            for m in re.finditer(
+                r'<a[^>]+href="([^"]+)"[^>]*>([^<]{10,})</a>',
+                html,
+            ):
+                href, title = m.group(1), m.group(2).strip()
+                if any(skip in title.lower() for skip in [
+                    "privacy", "terms", "cookie", "about", "contact",
+                    "sign in", "log in", "menu", "navigation",
+                ]):
+                    continue
+                url = href if href.startswith("http") else f"{source_url.rstrip('/')}/{href.lstrip('/')}"
+                items.append({
+                    "title": title,
+                    "url": url,
+                    "source": "utah_biz_blog",
+                    "description": "",
+                    "author": "",
+                    "posted_date": "",
+                    "post_id": url,
+                })
+        return items
 
-                    # Extract snippet / description
-                    snippet_el = await result.query_selector(
-                        "div.VwiC3b, span.aCOpRe, div[data-sncf]"
-                    )
-                    snippet = ""
-                    if snippet_el:
-                        snippet = (await snippet_el.inner_text()).strip()
-
-                    # Try to extract author name from title or snippet
-                    author = self._extract_author(title, snippet, href)
-
-                    collected.append({
-                        "title": title,
-                        "url": href,
-                        "description": snippet[:500],
-                        "author": author,
-                        "source": "linkedin_article",
-                        "post_id": href,
-                    })
-                except Exception as exc:
-                    logger.debug("[%s] Result extraction failed: %s", self.name, exc)
-
-        search_urls = self.get_search_urls()
-        urls_to_crawl: list[str] = []
-
-        for url in search_urls:
-            if len(collected) >= self.max_results_per_run:
-                break
-            await self.rate_limiter.acquire()
-            await asyncio.sleep(self.get_random_delay())
-            urls_to_crawl.append(url)
-
-        if urls_to_crawl:
-            await crawler.run(urls_to_crawl)
-
-        all_items = collected
-        logger.info("[%s] Scrape complete: %d items collected", self.name, len(all_items))
-        return all_items
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _extract_author(title: str, snippet: str, url: str) -> str:
-        """Try to extract the author name from LinkedIn article metadata.
-
-        LinkedIn Pulse URLs often contain the author name in the URL path,
-        and Google snippets may include "by Author Name" or "Author Name on LinkedIn".
-        """
-        author = ""
-
-        # Check URL for author slug: linkedin.com/pulse/title-author-name
-        url_match = re.search(
-            r"linkedin\.com/pulse/[^/]+-([a-z]+-[a-z]+(?:-[a-z]+)?)\b", url
-        )
-        if url_match:
-            slug = url_match.group(1)
-            author = slug.replace("-", " ").title()
-
-        # Check for "by Name" pattern in snippet
-        if not author:
-            by_match = re.search(r"\bby\s+([A-Z][a-z]+ [A-Z][a-z]+)", snippet)
-            if by_match:
-                author = by_match.group(1)
-
-        # Check for "Name on LinkedIn" pattern
-        if not author:
-            on_match = re.search(r"([A-Z][a-z]+ [A-Z][a-z]+)\s+on LinkedIn", title)
-            if on_match:
-                author = on_match.group(1)
-
-        return author
-
-    # ------------------------------------------------------------------
     # parse_item
     # ------------------------------------------------------------------
 

@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 from urllib.parse import urlencode, quote_plus
 
-from crawlee.playwright_crawler import PlaywrightCrawler, PlaywrightCrawlingContext
+import httpx
 
 from leadgen.agents.base import BaseAgent
 
@@ -107,147 +107,61 @@ class UtahCorporationsAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     async def scrape(self) -> list[dict]:
-        """Scrape Utah BES for new business filings."""
-        collected: list[dict] = []
+        """Fetch listing pages with httpx and extract items via regex."""
         search_urls = self.get_search_urls()
-        crawler = await self.setup_browser()
+        collected: list[dict] = []
+        headers = {"User-Agent": self.get_random_user_agent()}
 
-        @crawler.router.default_handler
-        async def handle_page(context: PlaywrightCrawlingContext) -> None:
-            page = context.page
-            await self.apply_stealth(page)
-
-            # Wait for results table
-            try:
-                await page.wait_for_selector(
-                    "table.searchResults, table#searchResultsTable, "
-                    "div.search-results table, div.results-list, "
-                    "table.table tbody tr",
-                    timeout=15_000,
-                )
-            except Exception:
-                logger.debug(
-                    "[%s] No results on %s", self.name, context.request.url
-                )
-                return
-
-            rows = await page.query_selector_all(
-                "table.searchResults tbody tr, "
-                "table#searchResultsTable tbody tr, "
-                "div.results-list div.result-item, "
-                "table.table tbody tr"
-            )
-
-            for row in rows:
+        async with httpx.AsyncClient(
+            headers=headers, follow_redirects=True, timeout=30.0
+        ) as client:
+            for url in search_urls:
                 if len(collected) >= self.max_results_per_run:
                     break
+                await self.rate_limiter.acquire()
+                await asyncio.sleep(self.get_random_delay())
+
                 try:
-                    raw = await self._extract_row(row, page)
-                    if raw:
-                        collected.append(raw)
-                except Exception as exc:
-                    logger.warning("[%s] Row extraction error: %s", self.name, exc)
+                    resp = await client.get(url)
+                    resp.raise_for_status()
+                    html = resp.text
+                except httpx.HTTPError as exc:
+                    logger.warning("[%s] HTTP error for %s: %s", self.name, url, exc)
+                    continue
 
-            # Pagination
-            next_btn = await page.query_selector(
-                "a.next, a[aria-label='Next'], "
-                "li.next a, a.pagination-next"
-            )
-            if next_btn and len(collected) < self.max_results_per_run:
-                next_href = await next_btn.get_attribute("href")
-                if next_href:
-                    if not next_href.startswith("http"):
-                        next_href = f"{BASE_URL}{next_href}"
-                    await self.rate_limiter.acquire()
-                    await asyncio.sleep(self.get_random_delay())
-                    await context.enqueue_links(urls=[next_href])
+                items = self._parse_html(html, url)
+                for item in items:
+                    if len(collected) >= self.max_results_per_run:
+                        break
+                    collected.append(item)
 
-        urls_to_crawl: list[str] = []
-        for url in search_urls:
-            if len(collected) >= self.max_results_per_run:
-                break
-            await self.rate_limiter.acquire()
-            await asyncio.sleep(self.get_random_delay())
-            urls_to_crawl.append(url)
-
-        if urls_to_crawl:
-            await crawler.run(urls_to_crawl)
-
-        logger.info("[%s] Collected %d raw items", self.name, len(collected))
+        logger.info("[%s] Scrape complete: %d raw items", self.name, len(collected))
         return collected
 
-    # ------------------------------------------------------------------
-    # Row extraction
-    # ------------------------------------------------------------------
+    def _parse_html(self, html: str, source_url: str) -> list[dict]:
+        """Extract directory listings from HTML via regex."""
+        items: list[dict] = []
+        for m in re.finditer(
+            r'<a[^>]+href="([^"]+)"[^>]*>([^<]{5,})</a>',
+            html,
+        ):
+            href, title = m.group(1), m.group(2).strip()
+            if any(skip in title.lower() for skip in [
+                "privacy", "terms", "cookie", "about", "contact",
+                "sign in", "log in", "home", "back", "next", "previous",
+            ]):
+                continue
+            url = href if href.startswith("http") else f"{source_url.split('/')[0]}//{source_url.split('/')[2]}{href}"
+            items.append({
+                "title": title,
+                "url": url,
+                "post_id": url,
+                "description": "",
+                "location": "",
+                "contact_info": "",
+            })
+        return items
 
-    async def _extract_row(self, row: Any, page: Any) -> Optional[dict]:
-        """Extract data from a single BES search result row."""
-        raw: dict[str, Any] = {}
-
-        cells = await row.query_selector_all("td")
-        if len(cells) < 2:
-            return None
-
-        # Business name (usually first column with a link)
-        name_el = await row.query_selector("td a, a.entity-name")
-        if name_el:
-            raw["business_name"] = (await name_el.inner_text()).strip()
-            href = await name_el.get_attribute("href")
-            if href:
-                if not href.startswith("http"):
-                    href = f"{BASE_URL}{href}"
-                raw["url"] = href
-        else:
-            # Try first cell text
-            first_text = (await cells[0].inner_text()).strip()
-            if first_text:
-                raw["business_name"] = first_text
-            else:
-                return None
-
-        # Entity number
-        entity_el = await row.query_selector(
-            "td.entity-number, td:nth-child(2)"
-        )
-        if entity_el:
-            raw["entity_number"] = (await entity_el.inner_text()).strip()
-
-        # Entity type
-        type_el = await row.query_selector(
-            "td.entity-type, td:nth-child(3)"
-        )
-        if type_el:
-            raw["entity_type"] = (await type_el.inner_text()).strip()
-
-        # Status
-        status_el = await row.query_selector(
-            "td.status, td:nth-child(4)"
-        )
-        if status_el:
-            raw["status"] = (await status_el.inner_text()).strip()
-
-        # Filing date
-        date_el = await row.query_selector(
-            "td.filing-date, td:nth-child(5)"
-        )
-        if date_el:
-            raw["filing_date"] = (await date_el.inner_text()).strip()
-
-        # Registered agent
-        agent_el = await row.query_selector(
-            "td.registered-agent, td:nth-child(6)"
-        )
-        if agent_el:
-            raw["registered_agent"] = (await agent_el.inner_text()).strip()
-
-        # Post ID for dedup
-        raw["post_id"] = raw.get(
-            "entity_number", raw.get("url", raw.get("business_name", ""))
-        )
-
-        return raw
-
-    # ------------------------------------------------------------------
     # parse_item
     # ------------------------------------------------------------------
 

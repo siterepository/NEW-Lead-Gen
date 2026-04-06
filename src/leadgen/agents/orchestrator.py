@@ -26,11 +26,20 @@ from leadgen.agents.ksl import (
     KSLResumePostsAgent, KSLCareerServicesAgent, KSLGigWorkersAgent,
     KSLProfessionalServicesAgent, KSLCoachingConsultingAgent,
 )
+from leadgen.agents.craigslist import (
+    CraigslistSLCJobsWantedAgent, CraigslistProvoJobsWantedAgent,
+    CraigslistSLCResumesAgent, CraigslistSLCGigsAgent, CraigslistSLCBusinessAgent,
+)
+from leadgen.agents.content import (
+    RedditSLCCareersAgent, RedditUtahJobsAgent,
+    RedditCareerGuidanceAgent, RedditFIREUtahAgent,
+)
 
 logger = logging.getLogger(__name__)
 
-# Map of platform+name to agent class for lookup
+# Map of agent name to agent class for lookup
 _ALL_AGENTS: dict[str, type] = {
+    # KSL (8)
     "ksl_job_seekers": KSLJobSeekersAgent,
     "ksl_services_offered": KSLServicesOfferedAgent,
     "ksl_business_for_sale": KSLBusinessForSaleAgent,
@@ -39,6 +48,17 @@ _ALL_AGENTS: dict[str, type] = {
     "ksl_gig_workers": KSLGigWorkersAgent,
     "ksl_professional_services": KSLProfessionalServicesAgent,
     "ksl_coaching_consulting": KSLCoachingConsultingAgent,
+    # Craigslist (5)
+    "craigslist_slc_jobs_wanted": CraigslistSLCJobsWantedAgent,
+    "craigslist_provo_jobs_wanted": CraigslistProvoJobsWantedAgent,
+    "craigslist_slc_resumes": CraigslistSLCResumesAgent,
+    "craigslist_slc_gigs": CraigslistSLCGigsAgent,
+    "craigslist_slc_business": CraigslistSLCBusinessAgent,
+    # Reddit (4)
+    "reddit_slc_careers": RedditSLCCareersAgent,
+    "reddit_utah_jobs": RedditUtahJobsAgent,
+    "reddit_career_guidance": RedditCareerGuidanceAgent,
+    "reddit_fire_utah": RedditFIREUtahAgent,
 }
 
 

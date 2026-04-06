@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 from urllib.parse import urlencode, quote_plus
 
-from crawlee.playwright_crawler import PlaywrightCrawler, PlaywrightCrawlingContext
+import httpx
 
 from leadgen.agents.base import BaseAgent
 
@@ -109,150 +109,61 @@ class ExpiredLicensesAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     async def scrape(self) -> list[dict]:
-        """Scrape Utah DOPL for expired license holders."""
-        collected: list[dict] = []
+        """Fetch listing pages with httpx and extract items via regex."""
         search_urls = self.get_search_urls()
-        crawler = await self.setup_browser()
+        collected: list[dict] = []
+        headers = {"User-Agent": self.get_random_user_agent()}
 
-        @crawler.router.default_handler
-        async def handle_page(context: PlaywrightCrawlingContext) -> None:
-            page = context.page
-            await self.apply_stealth(page)
-
-            # DOPL uses a form-based search; may need to interact
-            # Wait for results table
-            try:
-                await page.wait_for_selector(
-                    "table.license-results, table#resultsTable, "
-                    "div.search-results table, div.results, "
-                    "table.table tbody tr, div.license-list",
-                    timeout=20_000,
-                )
-            except Exception:
-                logger.debug(
-                    "[%s] No results on %s", self.name, context.request.url
-                )
-                return
-
-            rows = await page.query_selector_all(
-                "table.license-results tbody tr, "
-                "table#resultsTable tbody tr, "
-                "div.results div.result-row, "
-                "table.table tbody tr, "
-                "div.license-list div.license-item"
-            )
-
-            for row in rows:
+        async with httpx.AsyncClient(
+            headers=headers, follow_redirects=True, timeout=30.0
+        ) as client:
+            for url in search_urls:
                 if len(collected) >= self.max_results_per_run:
                     break
+                await self.rate_limiter.acquire()
+                await asyncio.sleep(self.get_random_delay())
+
                 try:
-                    raw = await self._extract_row(row, page)
-                    if raw:
-                        # Only keep expired/lapsed/inactive
-                        status = raw.get("license_status", "").lower()
-                        if any(s.lower() in status for s in EXPIRED_STATUSES):
-                            collected.append(raw)
-                except Exception as exc:
-                    logger.warning("[%s] Row extraction error: %s", self.name, exc)
+                    resp = await client.get(url)
+                    resp.raise_for_status()
+                    html = resp.text
+                except httpx.HTTPError as exc:
+                    logger.warning("[%s] HTTP error for %s: %s", self.name, url, exc)
+                    continue
 
-            # Pagination
-            next_btn = await page.query_selector(
-                "a.next, a[aria-label='Next'], "
-                "li.next a, button.next-page"
-            )
-            if next_btn and len(collected) < self.max_results_per_run:
-                next_href = await next_btn.get_attribute("href")
-                if next_href:
-                    if not next_href.startswith("http"):
-                        next_href = f"{BASE_URL}{next_href}"
-                    await self.rate_limiter.acquire()
-                    await asyncio.sleep(self.get_random_delay())
-                    await context.enqueue_links(urls=[next_href])
+                items = self._parse_html(html, url)
+                for item in items:
+                    if len(collected) >= self.max_results_per_run:
+                        break
+                    collected.append(item)
 
-        urls_to_crawl: list[str] = []
-        for url in search_urls:
-            if len(collected) >= self.max_results_per_run:
-                break
-            await self.rate_limiter.acquire()
-            await asyncio.sleep(self.get_random_delay())
-            urls_to_crawl.append(url)
-
-        if urls_to_crawl:
-            await crawler.run(urls_to_crawl)
-
-        logger.info("[%s] Collected %d raw items", self.name, len(collected))
+        logger.info("[%s] Scrape complete: %d raw items", self.name, len(collected))
         return collected
 
-    # ------------------------------------------------------------------
-    # Row extraction
-    # ------------------------------------------------------------------
+    def _parse_html(self, html: str, source_url: str) -> list[dict]:
+        """Extract directory listings from HTML via regex."""
+        items: list[dict] = []
+        for m in re.finditer(
+            r'<a[^>]+href="([^"]+)"[^>]*>([^<]{5,})</a>',
+            html,
+        ):
+            href, title = m.group(1), m.group(2).strip()
+            if any(skip in title.lower() for skip in [
+                "privacy", "terms", "cookie", "about", "contact",
+                "sign in", "log in", "home", "back", "next", "previous",
+            ]):
+                continue
+            url = href if href.startswith("http") else f"{source_url.split('/')[0]}//{source_url.split('/')[2]}{href}"
+            items.append({
+                "title": title,
+                "url": url,
+                "post_id": url,
+                "description": "",
+                "location": "",
+                "contact_info": "",
+            })
+        return items
 
-    async def _extract_row(self, row: Any, page: Any) -> Optional[dict]:
-        """Extract data from a single DOPL license result row."""
-        raw: dict[str, Any] = {}
-
-        cells = await row.query_selector_all("td")
-        if len(cells) < 2:
-            return None
-
-        # Name (usually first column)
-        name_el = await row.query_selector("td a, td:first-child")
-        if name_el:
-            raw["name"] = (await name_el.inner_text()).strip()
-            href = await name_el.get_attribute("href")
-            if href:
-                if not href.startswith("http"):
-                    href = f"{BASE_URL}{href}"
-                raw["url"] = href
-        else:
-            return None
-
-        if not raw.get("name"):
-            return None
-
-        # License number
-        lic_el = await row.query_selector(
-            "td.license-number, td:nth-child(2)"
-        )
-        if lic_el:
-            raw["license_number"] = (await lic_el.inner_text()).strip()
-
-        # Profession / License type
-        prof_el = await row.query_selector(
-            "td.profession, td:nth-child(3)"
-        )
-        if prof_el:
-            raw["profession"] = (await prof_el.inner_text()).strip()
-
-        # Status
-        status_el = await row.query_selector(
-            "td.status, td:nth-child(4)"
-        )
-        if status_el:
-            raw["license_status"] = (await status_el.inner_text()).strip()
-
-        # Expiration date
-        exp_el = await row.query_selector(
-            "td.expiration-date, td:nth-child(5)"
-        )
-        if exp_el:
-            raw["expiration_date"] = (await exp_el.inner_text()).strip()
-
-        # City
-        city_el = await row.query_selector(
-            "td.city, td:nth-child(6)"
-        )
-        if city_el:
-            raw["city"] = (await city_el.inner_text()).strip()
-
-        # Post ID for dedup
-        raw["post_id"] = raw.get(
-            "license_number", raw.get("url", raw.get("name", ""))
-        )
-
-        return raw
-
-    # ------------------------------------------------------------------
     # parse_item
     # ------------------------------------------------------------------
 

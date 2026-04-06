@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 from urllib.parse import urlencode, quote_plus
 
-from crawlee.playwright_crawler import PlaywrightCrawler, PlaywrightCrawlingContext
+import httpx
 
 from leadgen.agents.base import BaseAgent
 
@@ -140,19 +140,14 @@ class GoogleMapsUtahAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     async def scrape(self) -> list[dict]:
-        """Scrape Google Maps or use Places API for Utah businesses."""
-        if self.use_api:
-            return await self._scrape_api()
-        return await self._scrape_browser()
-
-    async def _scrape_api(self) -> list[dict]:
-        """Use Google Places API to find businesses."""
-        import aiohttp  # noqa: F811
-
-        collected: list[dict] = []
+        """Fetch listing pages with httpx and extract items via regex."""
         search_urls = self.get_search_urls()
+        collected: list[dict] = []
+        headers = {"User-Agent": self.get_random_user_agent()}
 
-        async with aiohttp.ClientSession() as session:
+        async with httpx.AsyncClient(
+            headers=headers, follow_redirects=True, timeout=30.0
+        ) as client:
             for url in search_urls:
                 if len(collected) >= self.max_results_per_run:
                     break
@@ -160,172 +155,43 @@ class GoogleMapsUtahAgent(BaseAgent):
                 await asyncio.sleep(self.get_random_delay())
 
                 try:
-                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-                        if resp.status != 200:
-                            logger.warning(
-                                "[%s] API returned %d for %s",
-                                self.name, resp.status, url[:80],
-                            )
-                            continue
-                        data = await resp.json()
-                        results = data.get("results", [])
-                        for place in results:
-                            if len(collected) >= self.max_results_per_run:
-                                break
-                            raw = self._parse_api_result(place)
-                            if raw:
-                                collected.append(raw)
-                except Exception as exc:
-                    logger.warning("[%s] API request failed: %s", self.name, exc)
+                    resp = await client.get(url)
+                    resp.raise_for_status()
+                    html = resp.text
+                except httpx.HTTPError as exc:
+                    logger.warning("[%s] HTTP error for %s: %s", self.name, url, exc)
+                    continue
 
-        logger.info("[%s] API collected %d raw items", self.name, len(collected))
+                items = self._parse_html(html, url)
+                for item in items:
+                    if len(collected) >= self.max_results_per_run:
+                        break
+                    collected.append(item)
+
+        logger.info("[%s] Scrape complete: %d raw items", self.name, len(collected))
         return collected
 
-    async def _scrape_browser(self) -> list[dict]:
-        """Fallback: scrape Google Maps search results via browser."""
-        collected: list[dict] = []
-        search_urls = self.get_search_urls()
-        crawler = await self.setup_browser()
+    def _parse_html(self, html: str, source_url: str) -> list[dict]:
+        """Extract business listings from Google Maps / search HTML via regex."""
+        items: list[dict] = []
+        # Google search result links
+        for m in re.finditer(
+            r'<a[^>]+href="([^"]+)"[^>]*><h3[^>]*>([^<]+)</h3></a>',
+            html,
+        ):
+            href, title = m.group(1), m.group(2).strip()
+            if not title or "google" in href.lower():
+                continue
+            items.append({
+                "business_name": title,
+                "url": href,
+                "location": "",
+                "phone": "",
+                "category": "",
+                "post_id": href,
+            })
+        return items
 
-        @crawler.router.default_handler
-        async def handle_page(context: PlaywrightCrawlingContext) -> None:
-            page = context.page
-            await self.apply_stealth(page)
-
-            # Wait for Maps results to load
-            try:
-                await page.wait_for_selector(
-                    "div.Nv2PK, div[role='feed'] div.Nv2PK, "
-                    "div.section-result, a.hfpxzc",
-                    timeout=20_000,
-                )
-            except Exception:
-                logger.debug(
-                    "[%s] No Maps results on %s", self.name, context.request.url
-                )
-                return
-
-            # Scroll to load more results
-            feed = await page.query_selector("div[role='feed']")
-            if feed:
-                for _ in range(5):
-                    await feed.evaluate("el => el.scrollTop = el.scrollHeight")
-                    await asyncio.sleep(1.5)
-
-            cards = await page.query_selector_all(
-                "div.Nv2PK, a.hfpxzc"
-            )
-
-            for card in cards:
-                if len(collected) >= self.max_results_per_run:
-                    break
-                try:
-                    raw = await self._extract_maps_card(card, page)
-                    if raw:
-                        collected.append(raw)
-                except Exception as exc:
-                    logger.warning("[%s] Card extraction error: %s", self.name, exc)
-
-        urls_to_crawl: list[str] = []
-        for url in search_urls:
-            if len(collected) >= self.max_results_per_run:
-                break
-            await self.rate_limiter.acquire()
-            await asyncio.sleep(self.get_random_delay())
-            urls_to_crawl.append(url)
-
-        if urls_to_crawl:
-            await crawler.run(urls_to_crawl)
-
-        logger.info("[%s] Browser collected %d raw items", self.name, len(collected))
-        return collected
-
-    # ------------------------------------------------------------------
-    # Extraction helpers
-    # ------------------------------------------------------------------
-
-    def _parse_api_result(self, place: dict) -> Optional[dict]:
-        """Parse a Google Places API result into raw dict."""
-        name = place.get("name", "")
-        if not name:
-            return None
-
-        location = place.get("geometry", {}).get("location", {})
-        address = place.get("formatted_address", "")
-
-        return {
-            "business_name": name,
-            "address": address,
-            "location": address,
-            "lat": location.get("lat"),
-            "lng": location.get("lng"),
-            "rating": place.get("rating"),
-            "user_ratings_total": place.get("user_ratings_total"),
-            "types": place.get("types", []),
-            "place_id": place.get("place_id", ""),
-            "business_status": place.get("business_status", ""),
-            "url": f"https://www.google.com/maps/place/?q=place_id:{place.get('place_id', '')}",
-            "post_id": place.get("place_id", name),
-        }
-
-    async def _extract_maps_card(
-        self, card: Any, page: Any
-    ) -> Optional[dict]:
-        """Extract data from a Google Maps search result card."""
-        raw: dict[str, Any] = {}
-
-        # Business name
-        name_el = await card.query_selector(
-            "div.qBF1Pd, div.fontHeadlineSmall, "
-            "span.fontHeadlineSmall"
-        )
-        if name_el:
-            raw["business_name"] = (await name_el.inner_text()).strip()
-        else:
-            # Try aria-label on the card itself
-            label = await card.get_attribute("aria-label")
-            if label:
-                raw["business_name"] = label.strip()
-            else:
-                return None
-
-        # Rating
-        rating_el = await card.query_selector(
-            "span.MW4etd, span.fontBodyMedium span[role='img']"
-        )
-        if rating_el:
-            raw["rating"] = (await rating_el.inner_text()).strip()
-
-        # Review count
-        review_el = await card.query_selector(
-            "span.UY7F9, span.fontBodyMedium span"
-        )
-        if review_el:
-            raw["review_count"] = (await review_el.inner_text()).strip()
-
-        # Address / category info
-        info_els = await card.query_selector_all(
-            "div.W4Efsd span, div.fontBodyMedium > span"
-        )
-        info_parts = []
-        for el in info_els:
-            text = (await el.inner_text()).strip()
-            if text and text != "\u00b7":
-                info_parts.append(text)
-        if info_parts:
-            raw["location"] = " ".join(info_parts)
-
-        # URL from href
-        href = await card.get_attribute("href")
-        if href:
-            raw["url"] = href
-
-        # Post ID
-        raw["post_id"] = raw.get("url", raw.get("business_name", ""))
-
-        return raw
-
-    # ------------------------------------------------------------------
     # parse_item
     # ------------------------------------------------------------------
 

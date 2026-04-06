@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 from urllib.parse import urlencode, quote_plus
 
-from crawlee.playwright_crawler import PlaywrightCrawler, PlaywrightCrawlingContext
+import httpx
 
 from leadgen.agents.base import BaseAgent
 
@@ -104,155 +104,68 @@ class UtahWorkforceAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     async def scrape(self) -> list[dict]:
-        """Scrape Utah Workforce Services listings."""
-        collected: list[dict] = []
+        """Fetch listing pages with httpx and extract items via regex."""
         search_urls = self.get_search_urls()
-        crawler = await self.setup_browser()
+        collected: list[dict] = []
+        headers = {"User-Agent": self.get_random_user_agent()}
 
-        @crawler.router.default_handler
-        async def handle_page(context: PlaywrightCrawlingContext) -> None:
-            page = context.page
-            await self.apply_stealth(page)
-
-            # Wait for job listing cards
-            try:
-                await page.wait_for_selector(
-                    "div.job-listing, div.search-result-item, "
-                    "tr.clickable-row, div.job-result, "
-                    "div.card.job-card, li.job-item",
-                    timeout=15_000,
-                )
-            except Exception:
-                logger.debug(
-                    "[%s] No listings on %s", self.name, context.request.url
-                )
-                return
-
-            cards = await page.query_selector_all(
-                "div.job-listing, div.search-result-item, "
-                "tr.clickable-row, div.job-result, "
-                "div.card.job-card, li.job-item"
-            )
-
-            for card in cards:
+        async with httpx.AsyncClient(
+            headers=headers, follow_redirects=True, timeout=30.0
+        ) as client:
+            for url in search_urls:
                 if len(collected) >= self.max_results_per_run:
                     break
+                await self.rate_limiter.acquire()
+                await asyncio.sleep(self.get_random_delay())
+
                 try:
-                    raw = await self._extract_card(card, page)
-                    if raw:
-                        collected.append(raw)
-                except Exception as exc:
-                    logger.warning("[%s] Card extraction error: %s", self.name, exc)
+                    resp = await client.get(url)
+                    resp.raise_for_status()
+                    html = resp.text
+                except httpx.HTTPError as exc:
+                    logger.warning("[%s] HTTP error for %s: %s", self.name, url, exc)
+                    continue
 
-            # Pagination
-            next_btn = await page.query_selector(
-                "a.next-page, a[aria-label='Next'], "
-                "li.next a, a.pagination-next"
-            )
-            if next_btn and len(collected) < self.max_results_per_run:
-                next_href = await next_btn.get_attribute("href")
-                if next_href:
-                    if not next_href.startswith("http"):
-                        next_href = f"{BASE_URL}{next_href}"
-                    await self.rate_limiter.acquire()
-                    await asyncio.sleep(self.get_random_delay())
-                    await context.enqueue_links(urls=[next_href])
+                items = self._parse_html(html, url)
+                for item in items:
+                    if len(collected) >= self.max_results_per_run:
+                        break
+                    collected.append(item)
 
-        urls_to_crawl: list[str] = []
-        for url in search_urls:
-            if len(collected) >= self.max_results_per_run:
-                break
-            await self.rate_limiter.acquire()
-            await asyncio.sleep(self.get_random_delay())
-            urls_to_crawl.append(url)
-
-        if urls_to_crawl:
-            await crawler.run(urls_to_crawl)
-
-        logger.info("[%s] Collected %d raw items", self.name, len(collected))
+        logger.info("[%s] Scrape complete: %d raw items", self.name, len(collected))
         return collected
 
-    # ------------------------------------------------------------------
-    # Card extraction
-    # ------------------------------------------------------------------
+    def _parse_html(self, html: str, source_url: str) -> list[dict]:
+        """Extract job listings from HTML via regex."""
+        items: list[dict] = []
+        # Generic job listing pattern: links with title text
+        for m in re.finditer(
+            r'<a[^>]+href="([^"]+)"[^>]*>([^<]{5,})</a>',
+            html,
+        ):
+            href, title = m.group(1), m.group(2).strip()
+            # Skip navigation / footer links
+            if any(skip in title.lower() for skip in [
+                "privacy", "terms", "cookie", "about", "contact",
+                "sign in", "log in", "home", "back",
+            ]):
+                continue
+            url = href if href.startswith("http") else f"{BASE_URL}{href}"
+            post_id_match = re.search(r"/(\d{4,})", href)
+            post_id = post_id_match.group(1) if post_id_match else url
+            items.append({
+                "title": title,
+                "url": url,
+                "post_id": post_id,
+                "company": "",
+                "location": "",
+                "salary": "",
+                "description": "",
+                "posted_date": "",
+                "contact_info": "",
+            })
+        return items
 
-    async def _extract_card(self, card: Any, page: Any) -> Optional[dict]:
-        """Extract data from a Utah Workforce job listing card."""
-        raw: dict[str, Any] = {}
-
-        # Title
-        title_el = await card.query_selector(
-            "a.job-title, h3.job-title a, h2 a, "
-            "td.job-title a, a.job-link, span.title a"
-        )
-        if title_el:
-            raw["title"] = (await title_el.inner_text()).strip()
-            href = await title_el.get_attribute("href")
-            if href:
-                if not href.startswith("http"):
-                    href = f"{BASE_URL}{href}"
-                raw["url"] = href
-        else:
-            return None
-
-        # Company / Employer
-        company_el = await card.query_selector(
-            "span.company, span.employer, td.company, "
-            "div.company-name, a.company-link"
-        )
-        if company_el:
-            raw["company"] = (await company_el.inner_text()).strip()
-
-        # Location
-        loc_el = await card.query_selector(
-            "span.location, td.location, div.job-location, "
-            "span.city-state"
-        )
-        if loc_el:
-            raw["location"] = (await loc_el.inner_text()).strip()
-
-        # Salary
-        salary_el = await card.query_selector(
-            "span.salary, td.salary, div.salary-range, "
-            "span.compensation"
-        )
-        if salary_el:
-            raw["salary"] = (await salary_el.inner_text()).strip()
-
-        # Description
-        desc_el = await card.query_selector(
-            "div.description, p.snippet, td.description, "
-            "div.job-snippet"
-        )
-        if desc_el:
-            raw["description"] = (await desc_el.inner_text()).strip()
-
-        # Date posted
-        date_el = await card.query_selector(
-            "span.date, span.posted-date, td.date, "
-            "time, span.post-date"
-        )
-        if date_el:
-            raw["posted_date"] = (await date_el.inner_text()).strip()
-            dt_attr = await date_el.get_attribute("datetime")
-            if dt_attr:
-                raw["posted_date_iso"] = dt_attr
-
-        # Job ID for dedup
-        job_id_el = await card.query_selector(
-            "span.job-id, span.order-number"
-        )
-        if job_id_el:
-            raw["post_id"] = (await job_id_el.inner_text()).strip()
-        elif raw.get("url"):
-            match = re.search(r"[/=](\d{5,})", raw["url"])
-            raw["post_id"] = match.group(1) if match else raw["url"]
-        else:
-            raw["post_id"] = raw.get("title", "")
-
-        return raw
-
-    # ------------------------------------------------------------------
     # parse_item
     # ------------------------------------------------------------------
 

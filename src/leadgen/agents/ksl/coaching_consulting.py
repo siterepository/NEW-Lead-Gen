@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 from urllib.parse import quote_plus, urlencode
 
-from crawlee.playwright_crawler import PlaywrightCrawler, PlaywrightCrawlingContext
+import httpx
 
 from leadgen.agents.base import BaseAgent
 
@@ -105,148 +105,88 @@ class KSLCoachingConsultingAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     async def scrape(self) -> list[dict]:
-        """Scrape KSL for coaching and consulting listings."""
+        """Scrape KSL for coaching and consulting listings.
+
+        Uses httpx to fetch KSL pages and extracts listing data from
+        the embedded Next.js RSC payload (no browser rendering needed).
+        """
+        all_items: list[dict] = []
         search_urls = self.get_search_urls()
-        crawler = await self.setup_browser()
-        collected: list[dict] = []
+        max_urls = self.config.get("max_pages", 5)
 
-        @crawler.router.default_handler
-        async def handle_listing_page(context: PlaywrightCrawlingContext) -> None:
-            page = context.page
-            await self.apply_stealth(page)
+        headers = {
+            "User-Agent": self.get_random_user_agent(),
+            "Accept": "text/html,application/xhtml+xml",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
 
-            try:
-                await page.wait_for_selector(
-                    "div.listing-item, div.search-result, article.listing",
-                    timeout=15_000,
-                )
-            except Exception:
-                logger.debug("[%s] No listings on %s", self.name, context.request.url)
-                return
-
-            cards = await page.query_selector_all(
-                "div.listing-item, div.search-result, article.listing"
-            )
-
-            for card in cards:
-                if len(collected) >= self.max_results_per_run:
+        async with httpx.AsyncClient(
+            follow_redirects=True, timeout=30, headers=headers
+        ) as client:
+            for i, url in enumerate(search_urls[:max_urls]):
+                if len(all_items) >= self.max_results_per_run:
                     break
+
+                await self.rate_limiter.acquire()
+                delay = self.get_random_delay()
+                await asyncio.sleep(delay)
+
                 try:
-                    raw = await self._extract_card(card, page)
-                    if raw:
-                        listing_url = raw.get("url", "")
-                        if listing_url:
-                            last = await self.check_last_seen(listing_url)
-                            post_id = raw.get("post_id", "")
-                            if last and last == post_id:
-                                continue
-                        collected.append(raw)
+                    resp = await client.get(url)
+                    if resp.status_code != 200:
+                        logger.warning(
+                            "[%s] HTTP %d for %s", self.name, resp.status_code, url
+                        )
+                        continue
+
+                    # Extract listings from Next.js RSC embedded data
+                    ids = re.findall(r'\\?"id\\?":\s*(\d{7,})', resp.text)
+                    titles = re.findall(
+                        r'\\?"title\\?":\\?"((?:[^\\]|\\.)*?)\\?"', resp.text
+                    )
+                    cities = re.findall(
+                        r'\\?"city\\?":\\?"((?:[^\\]|\\.)*?)\\?"', resp.text
+                    )
+                    prices = re.findall(
+                        r'\\?"price\\?":\\?"((?:[^\\]|\\.)*?)\\?"', resp.text
+                    )
+
+                    for j, title in enumerate(titles):
+                        if len(all_items) >= self.max_results_per_run:
+                            break
+                        clean_title = title.replace('\\"', '"').replace("\\\\", "\\")
+                        lid = ids[j] if j < len(ids) else ""
+                        city = (
+                            cities[j].replace('\\"', "") if j < len(cities) else ""
+                        )
+                        price = (
+                            prices[j].replace('\\"', "") if j < len(prices) else ""
+                        )
+
+                        all_items.append({
+                            "post_id": lid,
+                            "title": clean_title,
+                            "location_city": city,
+                            "location_state": "Utah",
+                            "price": price,
+                            "source_url": f"{BASE_URL}/listing/{lid}" if lid else url,
+                            "platform": "ksl",
+                            "category": "coaching_consulting",
+                            "scraped_at": datetime.now(timezone.utc).isoformat(),
+                        })
+
+                    logger.info(
+                        "[%s] URL %d/%d: %d listings from %s",
+                        self.name, i + 1, min(len(search_urls), max_urls),
+                        len(titles), url[:80],
+                    )
+
                 except Exception as exc:
-                    logger.warning("[%s] Card extraction failed: %s", self.name, exc)
-
-            next_btn = await page.query_selector(
-                "a.pagination-next, a[rel='next'], a.next-page, button.pagination-next"
-            )
-            if next_btn and len(collected) < self.max_results_per_run:
-                next_href = await next_btn.get_attribute("href")
-                if next_href:
-                    if not next_href.startswith("http"):
-                        next_href = f"{BASE_URL}{next_href}"
-                    await self.rate_limiter.acquire()
-                    await asyncio.sleep(self.get_random_delay())
-                    await context.enqueue_links(urls=[next_href])
-
-        urls_to_crawl: list[str] = []
-        for url in search_urls:
-            if len(collected) >= self.max_results_per_run:
-                break
-            await self.rate_limiter.acquire()
-            await asyncio.sleep(self.get_random_delay())
-            urls_to_crawl.append(url)
-
-        if urls_to_crawl:
-            await crawler.run(urls_to_crawl)
-
-        logger.info("[%s] Scrape complete: %d raw items", self.name, len(collected))
-        return collected
-
-    # ------------------------------------------------------------------
-    # Card extraction
-    # ------------------------------------------------------------------
-
-    async def _extract_card(self, card: Any, page: Any) -> Optional[dict]:
-        """Extract structured data from a single listing card."""
-        raw: dict[str, Any] = {}
-
-        title_el = await card.query_selector(
-            "h2.item-title a, h3.listing-title a, a.item-link, "
-            "[data-testid='listing-title']"
+                    logger.warning("[%s] Error fetching %s: %s", self.name, url[:60], exc)
+        logger.info(
+            "[%s] Scrape complete: %d raw items collected", self.name, len(all_items)
         )
-        if title_el:
-            raw["title"] = (await title_el.inner_text()).strip()
-            href = await title_el.get_attribute("href")
-            if href:
-                raw["url"] = href if href.startswith("http") else f"{BASE_URL}{href}"
-        else:
-            return None
-
-        desc_el = await card.query_selector(
-            "div.item-description, p.listing-description, "
-            "div.item-body, span.description-text"
-        )
-        if desc_el:
-            raw["description"] = (await desc_el.inner_text()).strip()
-
-        date_el = await card.query_selector(
-            "span.item-date, time, span.listing-date, [data-testid='listing-date']"
-        )
-        if date_el:
-            raw["posted_date"] = (await date_el.inner_text()).strip()
-            dt_attr = await date_el.get_attribute("datetime")
-            if dt_attr:
-                raw["posted_date_iso"] = dt_attr
-
-        loc_el = await card.query_selector(
-            "span.item-location, span.listing-location, "
-            "div.location, [data-testid='listing-location']"
-        )
-        if loc_el:
-            raw["location"] = (await loc_el.inner_text()).strip()
-
-        price_el = await card.query_selector(
-            "span.listing-price, span.item-price, div.price, "
-            "[data-testid='listing-price']"
-        )
-        if price_el:
-            raw["price"] = (await price_el.inner_text()).strip()
-
-        contact_el = await card.query_selector(
-            "a.contact-seller, span.phone-number, a[href^='tel:'], a[href^='mailto:']"
-        )
-        if contact_el:
-            contact_text = (await contact_el.inner_text()).strip()
-            contact_href = await contact_el.get_attribute("href") or ""
-            raw["contact_info"] = contact_text or contact_href
-
-        if raw.get("url"):
-            match = re.search(r"/(\d+)", raw["url"])
-            raw["post_id"] = match.group(1) if match else raw["url"]
-        elif raw.get("title"):
-            raw["post_id"] = raw["title"]
-
-        img_el = await card.query_selector(
-            "div.item-image img, img.listing-image, [data-testid='listing-image'] img"
-        )
-        if img_el:
-            raw["image_url"] = await img_el.get_attribute("src")
-
-        cat_el = await card.query_selector(
-            "span.category-tag, span.item-category, a.category-link"
-        )
-        if cat_el:
-            raw["category"] = (await cat_el.inner_text()).strip()
-
-        return raw
+        return all_items
 
     # ------------------------------------------------------------------
     # parse_item

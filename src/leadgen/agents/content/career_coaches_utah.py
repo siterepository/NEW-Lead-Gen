@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 from urllib.parse import quote_plus, urlencode
 
-from crawlee.playwright_crawler import PlaywrightCrawler, PlaywrightCrawlingContext
+import httpx
 
 from leadgen.agents.base import BaseAgent
 
@@ -87,146 +87,84 @@ class UtahCareerCoachesAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     async def scrape(self) -> list[dict]:
-        """Scrape career coaching sites for testimonials and client data."""
-        all_items: list[dict] = []
-        crawler = await self.setup_browser()
-        collected: list[dict] = []
-
-        @crawler.router.default_handler
-        async def handle_page(context: PlaywrightCrawlingContext) -> None:
-            page = context.page
-            await self.apply_stealth(page)
-            url = context.request.url
-
-            try:
-                await page.wait_for_load_state("domcontentloaded", timeout=15_000)
-            except Exception:
-                return
-
-            if "google.com/search" in url:
-                # Extract Google search results pointing to coach sites
-                results = await page.query_selector_all("div.g a[href]")
-                for result in results:
-                    if len(collected) >= self.max_results_per_run:
-                        break
-                    try:
-                        href = await result.get_attribute("href") or ""
-                        title_el = await result.query_selector("h3")
-                        title = ""
-                        if title_el:
-                            title = (await title_el.inner_text()).strip()
-
-                        snippet_el = await result.query_selector(
-                            "div.VwiC3b, span.aCOpRe"
-                        )
-                        snippet = ""
-                        if snippet_el:
-                            snippet = (await snippet_el.inner_text()).strip()
-
-                        if href and not href.startswith("/search"):
-                            collected.append({
-                                "title": title,
-                                "url": href,
-                                "description": snippet[:500],
-                                "source": "google_coach_search",
-                                "coach_name": "",
-                                "testimonial_text": "",
-                                "client_name": "",
-                            })
-                    except Exception:
-                        continue
-            else:
-                # Extract testimonials/reviews from coach sites
-                testimonials = await page.query_selector_all(
-                    "div.testimonial, div.review, blockquote, "
-                    "div.client-story, div.success-story, "
-                    "div[class*='testimonial'], div[class*='review']"
-                )
-                for testimonial in testimonials:
-                    if len(collected) >= self.max_results_per_run:
-                        break
-                    try:
-                        text = (await testimonial.inner_text()).strip()
-                        if len(text) < 20:
-                            continue
-
-                        # Try to extract client name
-                        name_el = await testimonial.query_selector(
-                            "cite, span.name, span.author, strong, "
-                            "p.author, div.reviewer-name"
-                        )
-                        client_name = ""
-                        if name_el:
-                            client_name = (await name_el.inner_text()).strip()
-
-                        collected.append({
-                            "title": f"Testimonial from {client_name or 'anonymous'}",
-                            "url": url,
-                            "description": text[:500],
-                            "source": "coach_testimonial",
-                            "coach_name": "",
-                            "testimonial_text": text[:1000],
-                            "client_name": client_name,
-                            "post_id": f"{url}#{client_name or text[:30]}",
-                        })
-                    except Exception:
-                        continue
-
-                # Also extract coach business listings
-                listings = await page.query_selector_all(
-                    "div.business-listing, div.search-result, "
-                    "div.professional-card, li.regular-search-result"
-                )
-                for listing in listings:
-                    if len(collected) >= self.max_results_per_run:
-                        break
-                    try:
-                        name_el = await listing.query_selector(
-                            "h2 a, h3 a, a.business-name, a[class*='name']"
-                        )
-                        if not name_el:
-                            continue
-                        name = (await name_el.inner_text()).strip()
-                        href = await name_el.get_attribute("href") or ""
-
-                        desc_el = await listing.query_selector(
-                            "p, div.snippet, div.description"
-                        )
-                        desc = ""
-                        if desc_el:
-                            desc = (await desc_el.inner_text()).strip()
-
-                        collected.append({
-                            "title": name,
-                            "url": href if href.startswith("http") else url,
-                            "description": desc[:500],
-                            "source": "coach_listing",
-                            "coach_name": name,
-                            "testimonial_text": "",
-                            "client_name": "",
-                            "post_id": href or name,
-                        })
-                    except Exception:
-                        continue
-
+        """Fetch listing pages with httpx and extract items via regex."""
         search_urls = self.get_search_urls()
-        urls_to_crawl: list[str] = []
+        collected: list[dict] = []
+        headers = {"User-Agent": self.get_random_user_agent()}
 
-        for url in search_urls:
-            if len(collected) >= self.max_results_per_run:
-                break
-            await self.rate_limiter.acquire()
-            await asyncio.sleep(self.get_random_delay())
-            urls_to_crawl.append(url)
+        async with httpx.AsyncClient(
+            headers=headers, follow_redirects=True, timeout=30.0
+        ) as client:
+            for url in search_urls:
+                if len(collected) >= self.max_results_per_run:
+                    break
+                await self.rate_limiter.acquire()
+                await asyncio.sleep(self.get_random_delay())
 
-        if urls_to_crawl:
-            await crawler.run(urls_to_crawl)
+                try:
+                    resp = await client.get(url)
+                    resp.raise_for_status()
+                    html = resp.text
+                except httpx.HTTPError as exc:
+                    logger.warning("[%s] HTTP error for %s: %s", self.name, url, exc)
+                    continue
 
-        all_items = collected
-        logger.info("[%s] Scrape complete: %d items collected", self.name, len(all_items))
-        return all_items
+                items = self._parse_html(html, url)
+                for item in items:
+                    if len(collected) >= self.max_results_per_run:
+                        break
+                    collected.append(item)
 
-    # ------------------------------------------------------------------
+        logger.info("[%s] Scrape complete: %d raw items", self.name, len(collected))
+        return collected
+
+    def _parse_html(self, html: str, source_url: str) -> list[dict]:
+        """Extract article links from blog / content site HTML via regex."""
+        items: list[dict] = []
+        if "google.com/search" in source_url:
+            # Google search results
+            for m in re.finditer(
+                r'<a[^>]+href="(https?://(?!www\.google)[^"]+)"[^>]*>'
+                r'(?:<h3[^>]*>([^<]+)</h3>)?',
+                html,
+            ):
+                href = m.group(1)
+                title = m.group(2).strip() if m.group(2) else ""
+                if "/search" in href or not title:
+                    continue
+                items.append({
+                    "title": title,
+                    "url": href,
+                    "source": "google_search",
+                    "description": "",
+                    "author": "",
+                    "posted_date": "",
+                    "post_id": href,
+                })
+        else:
+            # Blog / article pages
+            for m in re.finditer(
+                r'<a[^>]+href="([^"]+)"[^>]*>([^<]{10,})</a>',
+                html,
+            ):
+                href, title = m.group(1), m.group(2).strip()
+                if any(skip in title.lower() for skip in [
+                    "privacy", "terms", "cookie", "about", "contact",
+                    "sign in", "log in", "menu", "navigation",
+                ]):
+                    continue
+                url = href if href.startswith("http") else f"{source_url.rstrip('/')}/{href.lstrip('/')}"
+                items.append({
+                    "title": title,
+                    "url": url,
+                    "source": "utah_biz_blog",
+                    "description": "",
+                    "author": "",
+                    "posted_date": "",
+                    "post_id": url,
+                })
+        return items
+
     # parse_item
     # ------------------------------------------------------------------
 

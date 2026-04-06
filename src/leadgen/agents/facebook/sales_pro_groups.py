@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 from urllib.parse import quote_plus, urlencode
 
-from crawlee.playwright_crawler import PlaywrightCrawler, PlaywrightCrawlingContext
+import httpx
 
 from leadgen.agents.base import BaseAgent
 
@@ -65,75 +65,84 @@ class FBSalesProGroupsAgent(BaseAgent):
         logger.info("[%s] Generated %d search URLs", self.name, len(urls))
         return urls
 
+    # ------------------------------------------------------------------
+    # scrape
+    # ------------------------------------------------------------------
+
     async def scrape(self) -> list[dict]:
-        all_items: list[dict] = []
-        crawler = await self.setup_browser()
+        """Fetch listing pages with httpx and extract items via regex."""
+        search_urls = self.get_search_urls()
         collected: list[dict] = []
-        seen_urls: set[str] = set()
+        headers = {"User-Agent": self.get_random_user_agent()}
 
-        @crawler.router.default_handler
-        async def handle_page(context: PlaywrightCrawlingContext) -> None:
-            page = context.page
-            await self.apply_stealth(page)
-            try:
-                await page.wait_for_load_state("domcontentloaded", timeout=15_000)
-            except Exception:
-                return
-
-            results = await page.query_selector_all("div.g")
-            for result in results:
+        async with httpx.AsyncClient(
+            headers=headers, follow_redirects=True, timeout=30.0
+        ) as client:
+            for url in search_urls:
                 if len(collected) >= self.max_results_per_run:
                     break
+                await self.rate_limiter.acquire()
+                await asyncio.sleep(self.get_random_delay())
+
                 try:
-                    link_el = await result.query_selector("a[href]")
-                    if not link_el:
-                        continue
-                    href = await link_el.get_attribute("href") or ""
-                    if "facebook.com/groups" not in href:
-                        continue
-
-                    clean_url = re.sub(r"[?#].*$", "", href)
-                    if clean_url in seen_urls:
-                        continue
-                    seen_urls.add(clean_url)
-
-                    title_el = await result.query_selector("h3")
-                    title = (await title_el.inner_text()).strip() if title_el else ""
-
-                    snippet_el = await result.query_selector("div.VwiC3b, span.aCOpRe")
-                    snippet = (await snippet_el.inner_text()).strip() if snippet_el else ""
-
-                    member_count = _extract_member_count(snippet)
-
-                    collected.append({
-                        "group_name": title,
-                        "url": clean_url,
-                        "description": snippet[:500],
-                        "member_count": member_count,
-                        "source": "google_fb_search",
-                        "group_type": "sales_professional",
-                        "requires_manual_monitoring": True,
-                        "post_id": clean_url,
-                    })
-                except Exception:
+                    resp = await client.get(url)
+                    resp.raise_for_status()
+                    html = resp.text
+                except httpx.HTTPError as exc:
+                    logger.warning("[%s] HTTP error for %s: %s", self.name, url, exc)
                     continue
 
-        search_urls = self.get_search_urls()
-        urls_to_crawl: list[str] = []
-        for url in search_urls:
-            if len(collected) >= self.max_results_per_run:
-                break
-            await self.rate_limiter.acquire()
-            await asyncio.sleep(self.get_random_delay())
-            urls_to_crawl.append(url)
+                items = self._parse_html(html, url)
+                for item in items:
+                    if len(collected) >= self.max_results_per_run:
+                        break
+                    collected.append(item)
 
-        if urls_to_crawl:
-            await crawler.run(urls_to_crawl)
+        logger.info("[%s] Scrape complete: %d raw items", self.name, len(collected))
+        return collected
 
-        all_items = collected
-        logger.info("[%s] Scrape complete: %d groups found", self.name, len(all_items))
-        return all_items
+    def _parse_html(self, html: str, source_url: str) -> list[dict]:
+        """Extract Facebook group links from Google search results HTML."""
+        items: list[dict] = []
+        seen_urls: set[str] = set()
+        # Google search results containing facebook.com/groups
+        for m in re.finditer(
+            r'<a[^>]+href="(https?://[^"]*facebook\.com/groups/[^"]*)"[^>]*>',
+            html,
+        ):
+            raw_url = m.group(1)
+            clean_url = re.sub(r"[?#].*$", "", raw_url)
+            if clean_url in seen_urls:
+                continue
+            seen_urls.add(clean_url)
+            # Try to extract title from nearby <h3>
+            context = html[m.end():m.end()+500]
+            title_match = re.search(r"<h3[^>]*>([^<]+)</h3>", context)
+            title = title_match.group(1).strip() if title_match else clean_url
+            # Try to extract snippet
+            snippet_match = re.search(
+                r'<(?:span|div)[^>]*class="[^"]*(?:VwiC3b|aCOpRe)[^"]*"[^>]*>([^<]+)',
+                context,
+            )
+            snippet = snippet_match.group(1).strip()[:500] if snippet_match else ""
+            # Extract member count
+            member_count = ""
+            mc_match = re.search(r"([\d,]+(?:\.\d+)?[KkMm]?)\s*members", snippet)
+            if mc_match:
+                member_count = mc_match.group(1)
+            items.append({
+                "group_name": title,
+                "url": clean_url,
+                "description": snippet,
+                "member_count": member_count,
+                "source": "google_fb_search",
+                "group_type": "career",
+                "requires_manual_monitoring": True,
+                "post_id": clean_url,
+            })
+        return items
 
+    # ------------------------------------------------------------------
     def parse_item(self, raw_data: dict) -> dict:
         return {
             "name": raw_data.get("group_name", ""),
