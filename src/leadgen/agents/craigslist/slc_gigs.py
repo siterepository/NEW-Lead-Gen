@@ -1,9 +1,10 @@
 """
-Craigslist Salt Lake City - Gigs Agent
+Craigslist Salt Lake City - Gigs Agent (People Offering Services)
 
-Scrapes the Salt Lake City Craigslist "gigs" section for people offering
-or seeking gig work.  These individuals are income-motivated, entrepreneurial,
-and may be open to a more structured career path with NWM.
+Scrapes the Salt Lake City Craigslist "gigs" section (/search/ggg) for
+PEOPLE offering their services as gig workers.  These are entrepreneurial
+individuals actively hustling for income -- not companies posting job
+openings.  They may be open to a more structured career path with NWM.
 """
 
 from __future__ import annotations
@@ -30,16 +31,20 @@ SEARCH_PATH = "/search/ggg"  # gigs section
 
 SEARCH_KEYWORDS: list[str] = [
     "sales",
-    "commission",
-    "business",
     "marketing",
+    "consulting",
     "financial",
+    "business",
     "insurance",
+    "coaching",
 ]
 
 
 class CraigslistSLCGigsAgent(BaseAgent):
-    """Scrape Craigslist SLC gigs section for potential NWM recruits.
+    """Scrape Craigslist SLC gigs section for PEOPLE offering services.
+
+    Targets the /search/ggg section where PEOPLE offer their own gig
+    services -- these are entrepreneurial individuals, not company postings.
 
     These postings reveal people who are:
     - Working gig-to-gig and seeking stable income

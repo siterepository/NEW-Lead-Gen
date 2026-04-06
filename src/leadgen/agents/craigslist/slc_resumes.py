@@ -1,9 +1,10 @@
 """
-Craigslist Salt Lake City - Resumes Agent
+Craigslist Salt Lake City - Resumes Agent (People Posting Resumes)
 
-Scrapes the Salt Lake City Craigslist "resumes" section for people posting
-their resumes publicly.  These individuals are actively marketing themselves
-for employment and represent high-intent recruiting prospects.
+Scrapes the Salt Lake City Craigslist "resumes" section (/search/res) for
+PEOPLE posting their resumes publicly.  These are individuals actively
+marketing themselves for employment -- not companies posting job openings.
+They represent high-intent recruiting prospects for NWM.
 """
 
 from __future__ import annotations
@@ -29,23 +30,23 @@ BASE_URL = "https://saltlakecity.craigslist.org"
 SEARCH_PATH = "/search/res"  # resumes section
 
 SEARCH_KEYWORDS: list[str] = [
-    "sales manager",
-    "business owner",
-    "real estate agent",
+    "sales",
     "insurance agent",
     "financial advisor",
-    "account executive",
+    "real estate",
+    "business owner",
+    "commission",
+    "door to door",
+    "management",
     "entrepreneur",
-    "business development",
-    "franchise",
-    "broker",
-    "financial planner",
-    "sales director",
 ]
 
 
 class CraigslistSLCResumesAgent(BaseAgent):
-    """Scrape Craigslist SLC resumes section for potential NWM recruits.
+    """Scrape Craigslist SLC resumes section for PEOPLE seeking work.
+
+    Targets the /search/res section where PEOPLE post their own resumes,
+    NOT the /search/jjj section where companies post job openings.
 
     These postings reveal people who are:
     - Actively advertising their skills and experience

@@ -1,0 +1,19 @@
+agent:
+  name: web_search
+  platform: search
+  description: "Search Google/DuckDuckGo for people seeking work or expressing dissatisfaction in sales, insurance, financial, door-to-door in Utah"
+  enabled: true
+
+source:
+  type: web_search
+  providers:
+    - serper  # 2500 free queries (needs SERPER_API_KEY)
+    - duckduckgo  # unlimited, no key needed
+    - google  # last resort
+
+scraping:
+  requests_per_minute: 5
+  delay_min: 3.0
+  delay_max: 8.0
+  schedule_minutes: 120  # every 2 hours
+  max_queries: 24  # max queries per run

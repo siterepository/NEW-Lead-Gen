@@ -1,9 +1,10 @@
 """
-Craigslist Provo - Jobs Wanted Agent
+Craigslist Provo - Resumes Agent (People Seeking Work)
 
-Scrapes the Provo/Orem Craigslist "jobs wanted" section for people actively
-seeking employment in Utah County.  Covers BYU / UVU grads, young
-professionals, and career changers in the Provo-Orem metro.
+Scrapes the Provo/Orem Craigslist "resumes" section (/search/res) for
+PEOPLE who have posted their resume publicly.  These are individuals actively
+looking for work -- not companies posting job openings.  Covers BYU / UVU
+grads, young professionals, and career changers in the Provo-Orem metro.
 """
 
 from __future__ import annotations
@@ -26,29 +27,32 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 BASE_URL = "https://provo.craigslist.org"
-SEARCH_PATH = "/search/jjj"  # jobs wanted section
+SEARCH_PATH = "/search/res"  # resumes section -- PEOPLE posting, not employers
 
 SEARCH_KEYWORDS: list[str] = [
-    "commission sales",
-    "sales rep",
-    "sales manager",
-    "unlimited income",
-    "insurance sales",
-    "real estate agent",
-    "financial advisor",
+    "sales experience",
+    "door to door",
+    "insurance",
+    "financial",
+    "real estate",
     "business development",
-    "account executive",
-    "own boss",
+    "entrepreneur",
+    "looking for opportunity",
+    "career change",
+    "self motivated",
 ]
 
 
 class CraigslistProvoJobsWantedAgent(BaseAgent):
-    """Scrape Craigslist Provo jobs-wanted section for potential NWM recruits.
+    """Scrape Craigslist Provo resumes section for PEOPLE seeking work.
+
+    Targets the /search/res section where PEOPLE post their own resumes,
+    NOT the /search/jjj section where companies post job openings.
 
     These postings reveal people who are:
-    - Actively looking for employment in Utah County
+    - Actively marketing themselves for new opportunities in Utah County
     - Often recent BYU / UVU graduates seeking careers
-    - Self-motivated enough to post publicly
+    - Self-motivated enough to post their resume publicly
     - Potentially open to financial services careers
     """
 

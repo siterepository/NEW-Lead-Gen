@@ -1,9 +1,18 @@
 """
 Pre-pipeline relevance filter for scraped items.
 
-Runs BEFORE items enter the normalize -> dedupe -> score pipeline.
-Uses word-boundary matching to identify business/professional content
-relevant to NWM recruiting. Items that don't pass get dropped.
+KEY RULE: We want PEOPLE actively seeking work or unhappy in their current
+role -- NOT companies posting job listings. We target:
+  - Door-to-door sales reps looking for a change
+  - Sales people expressing grievances with their employer
+  - Entrepreneurs whose business is struggling or for sale
+  - Financial / insurance / real estate pros seeking new opportunities
+  - Anyone actively posting "looking for work" or "need a change"
+
+We REJECT:
+  - Companies posting "we're hiring" / "now hiring" / "join our team"
+  - Generic job listings (these are employers, not prospects)
+  - Vehicles, appliances, pets, trades
 """
 
 from __future__ import annotations
@@ -14,116 +23,181 @@ import re
 logger = logging.getLogger(__name__)
 
 
-def _word_match(keyword: str, text: str) -> bool:
-    """Check if keyword appears as a whole word/phrase in text (not substring)."""
+def _has(keyword: str, text: str) -> bool:
+    """Word-boundary match (case-insensitive)."""
     return bool(re.search(r'\b' + re.escape(keyword) + r'\b', text, re.IGNORECASE))
 
 
 class RelevanceFilter:
-    """Keyword-based relevance gate for raw scraped items."""
+    """Filter that ONLY passes people seeking work / expressing dissatisfaction.
 
-    # HIGH-VALUE keywords (2 points each) - these are strong NWM recruit signals
-    HIGH_VALUE: list[str] = [
-        # Entrepreneur/Business Owner
-        "entrepreneur", "business owner", "small business owner", "franchise owner",
-        "startup founder", "co-founder", "business for sale", "franchise",
-        "business available", "business opportunity", "turnkey",
-        # Sales Professionals
-        "sales manager", "sales director", "account executive", "sales rep",
-        "business development", "sales leader", "sales executive",
-        "outside sales", "inside sales", "sales representative",
-        "sales position", "sales role", "earn commission",
-        # Real Estate
-        "real estate agent", "realtor", "real estate broker", "listing agent",
-        "property manager", "real estate",
+    Rejects company job postings and irrelevant listings.
+    """
+
+    # ----------------------------------------------------------------
+    # COMPANY/HIRING SIGNALS -- instant reject (these are employers, not leads)
+    # ----------------------------------------------------------------
+    HIRING_SIGNALS: list[str] = [
+        # Direct hiring language
+        "we are hiring", "we're hiring", "now hiring", "currently hiring",
+        "hiring immediately", "hiring now", "help wanted",
+        "join our team", "join our growing team", "join us",
+        "apply now", "apply today", "apply within",
+        "seeking candidates", "looking for candidates",
+        "accepting applications", "taking applications",
+        "open position", "open positions", "position available",
+        "positions available", "job opening", "job openings",
+        "immediate opening", "immediate openings",
+        # Company-side recruiting language
+        "we offer", "we provide", "company offers",
+        "competitive salary", "competitive pay", "competitive wages",
+        "benefits include", "benefits package", "full benefits",
+        "401k", "health insurance provided", "PTO",
+        "equal opportunity employer", "EOE",
+        "background check required", "drug test required",
+        "must pass background", "pre-employment",
+        # Job requirement language (company posting, not person seeking)
+        "must have experience", "must have a valid",
+        "requirements include", "qualifications include",
+        "minimum qualifications", "preferred qualifications",
+        "years of experience required", "degree required",
+        "send resume to", "email resume", "fax resume",
+    ]
+
+    # ----------------------------------------------------------------
+    # PERSON SEEKING / DISSATISFIED -- these are our target leads (2 pts each)
+    # ----------------------------------------------------------------
+    PERSON_SEEKING: list[str] = [
+        # Actively looking
+        "looking for work", "looking for a job", "looking for a new",
+        "looking for opportunity", "looking for opportunities",
+        "seeking employment", "seeking work", "seeking a position",
+        "seeking new opportunities", "open to opportunities",
+        "available for hire", "available immediately",
+        "hire me", "need a job", "need work", "need a change",
+        "in search of", "on the job market",
+        "between jobs", "recently laid off", "recently let go",
+        "unemployed", "job hunting", "job searching",
+        # Dissatisfaction / grievances
+        "hate my job", "hate this job", "tired of my job",
+        "burned out", "burnt out", "burnout",
+        "underpaid", "overworked", "undervalued", "unappreciated",
+        "toxic workplace", "toxic boss", "toxic management",
+        "no growth", "no advancement", "dead end job", "dead-end",
+        "ready for a change", "need a change", "time for a change",
+        "done with", "fed up", "frustrated with my",
+        "leaving my job", "quitting my job", "quit my job",
+        "thinking about leaving", "considering leaving",
+        "door to door is killing me", "tired of door to door",
+        "tired of cold calling", "tired of knocking doors",
+        # Career transition
+        "career change", "career pivot", "career transition",
+        "new chapter", "fresh start", "starting over",
+        "changing careers", "switching careers",
+        "want to do something different", "ready to move on",
+        # Entrepreneurial distress (business failing/selling)
+        "selling my business", "selling my", "closing my business",
+        "business is struggling", "business for sale",
+        "need to sell", "shutting down",
+        "ready for something new", "ready for a new",
+    ]
+
+    # ----------------------------------------------------------------
+    # TARGET INDUSTRY -- person is in our target industry (1 pt each)
+    # ----------------------------------------------------------------
+    TARGET_INDUSTRY: list[str] = [
+        # Door to door / direct sales
+        "door to door", "d2d", "door-to-door",
+        "pest control", "solar sales", "alarm sales", "vivint",
+        "aptive", "summit solar",
+        # Sales
+        "sales rep", "sales experience", "sales background",
+        "commission only", "commission based", "1099",
+        "outside sales", "inside sales", "cold calling",
+        "B2B sales", "B2C sales", "direct sales",
+        "MLM", "network marketing", "multi-level",
         # Insurance
-        "insurance agent", "insurance broker", "life insurance", "insurance producer",
-        "insurance sales",
+        "life insurance", "insurance agent", "insurance sales",
+        "insurance broker", "health insurance", "P&C",
         # Financial
-        "financial advisor", "financial planner", "wealth manager",
-        "investment advisor", "CPA", "financial consultant", "financial services",
-        # Executive/Leadership
-        "vice president", "chief executive", "chief operating",
-        "general manager", "regional manager", "district manager",
-        # Coaching/Consulting
-        "business coach", "executive coach", "sales coach", "business consultant",
-        "management consultant",
-        # Recruiting-friendly phrases in job posts
-        "unlimited income", "unlimited earning", "be your own boss",
-        "own boss", "high commission", "uncapped commission",
-        "six figure", "six-figure", "remote sales",
+        "financial advisor", "financial planner", "financial services",
+        "wealth management", "investment", "mortgage",
+        # Real estate
+        "real estate agent", "realtor", "real estate",
+        "property management", "broker",
+        # Entrepreneur
+        "entrepreneur", "business owner", "small business",
+        "startup", "founder", "self employed", "freelance",
     ]
 
-    # MEDIUM-VALUE keywords (1 point each) - relevant but need context
-    MEDIUM_VALUE: list[str] = [
-        "sales", "commission", "revenue", "closing",
-        "financial", "insurance", "broker", "mortgage",
-        "advisor", "consulting", "coaching", "executive",
-        "director", "leadership", "manager",
-        "income potential", "self employed", "independent",
-        "business", "profitable", "established",
-    ]
-
-    # REJECT keywords - instant disqualify
+    # ----------------------------------------------------------------
+    # HARD REJECT -- not a person, not relevant
+    # ----------------------------------------------------------------
     REJECT: list[str] = [
-        # Vehicles/brands
+        # Vehicles
         "Honda", "Toyota", "Ford", "Chevrolet", "Dodge", "Jeep", "BMW",
         "Polaris", "Kawasaki", "Yamaha", "Triumph", "Harley", "Can-Am", "KTM",
-        "motorcycle", "ATV", "UTV", "snowmobile",
+        "motorcycle", "ATV", "UTV",
         # Auto/Parts
         "auto parts", "transmission", "bumper", "exhaust", "CDL",
-        # Food/Restaurant (not the business, just line workers)
-        "line cook", "dishwasher", "busser", "barista",
-        # Trades (not target market)
+        # Food workers
+        "line cook", "dishwasher", "busser", "barista", "server wanted",
+        # Trades
         "electrician", "plumber", "welder", "HVAC", "roofer", "carpenter",
         "landscaping crew", "lawn care technician",
         # Pets
         "puppy", "puppies", "kitten", "AKC",
         # Recreation
         "paddleboard", "kayak", "golf cart",
-        # Random
+        # Random stuff
         "canning jar", "turf supply", "mower",
     ]
 
     def is_relevant(self, title: str, description: str = "") -> tuple[bool, float, str]:
-        """Check if an item is relevant to NWM recruiting.
-
-        Uses word-boundary matching to avoid false positives like
-        'COO' matching inside 'Coordinator' or 'Cook'.
+        """Check if this is a PERSON seeking work (not a company hiring).
 
         Returns:
             (is_relevant: bool, confidence: float 0-1, reason: str)
         """
         text = f"{title} {description}"
 
-        # Check reject keywords first (word-boundary match)
+        # STEP 1: Reject companies posting jobs
+        for signal in self.HIRING_SIGNALS:
+            if _has(signal, text):
+                return (False, 0.95, f"Company hiring post: '{signal}'")
+
+        # STEP 2: Reject non-professional items
         for rej in self.REJECT:
-            if _word_match(rej, text):
+            if _has(rej, text):
                 return (False, 0.9, f"Rejected: '{rej}'")
 
-        # Score with high-value keywords (2 points each)
+        # STEP 3: Score for person seeking work (2 pts each)
         score = 0
         matches = []
-        for kw in self.HIGH_VALUE:
-            if _word_match(kw, text):
+        for kw in self.PERSON_SEEKING:
+            if _has(kw, text):
                 score += 2
                 matches.append(kw)
 
-        # Score with medium-value keywords (1 point each)
-        for kw in self.MEDIUM_VALUE:
-            if _word_match(kw, text):
+        # STEP 4: Score for target industry (1 pt each)
+        for kw in self.TARGET_INDUSTRY:
+            if _has(kw, text):
                 score += 1
                 if kw not in matches:
                     matches.append(kw)
 
-        if score >= 3:
-            return (True, 0.95, f"Strong: {', '.join(matches[:3])}")
+        # STEP 5: Threshold
+        if score >= 4:
+            return (True, 0.95, f"Strong prospect: {', '.join(matches[:3])}")
+        elif score >= 3:
+            return (True, 0.85, f"Good prospect: {', '.join(matches[:3])}")
         elif score >= 2:
-            return (True, 0.80, f"Good: {', '.join(matches[:3])}")
+            return (True, 0.70, f"Possible prospect: {', '.join(matches[:2])}")
         elif score >= 1:
-            return (True, 0.60, f"Match: {', '.join(matches[:2])}")
+            # Single industry match without seeking signal - weak
+            return (False, 0.4, f"Industry match but no seeking signal: {', '.join(matches[:1])}")
         else:
-            return (False, 0.3, "No relevant keywords")
+            return (False, 0.2, "No relevant signals")
 
     def filter_batch(self, items: list[dict]) -> tuple[list[dict], list[dict]]:
         """Filter a batch of items. Returns (relevant, rejected)."""

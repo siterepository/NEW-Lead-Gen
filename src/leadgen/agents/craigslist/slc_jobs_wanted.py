@@ -1,9 +1,10 @@
 """
-Craigslist Salt Lake City - Jobs Wanted Agent
+Craigslist Salt Lake City - Resumes Agent (People Seeking Work)
 
-Scrapes the Salt Lake City Craigslist "jobs wanted" section for people
-actively seeking employment.  These individuals have explicitly posted
-that they want work and may be open to NWM financial advisor recruiting.
+Scrapes the Salt Lake City Craigslist "resumes" section (/search/res) for
+PEOPLE who have posted their resume publicly.  These are individuals actively
+looking for work -- not companies posting job openings.  They may be open
+to NWM financial advisor recruiting.
 """
 
 from __future__ import annotations
@@ -26,28 +27,31 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 BASE_URL = "https://saltlakecity.craigslist.org"
-SEARCH_PATH = "/search/jjj"  # jobs wanted section
+SEARCH_PATH = "/search/res"  # resumes section -- PEOPLE posting, not employers
 
 SEARCH_KEYWORDS: list[str] = [
-    "commission sales",
-    "sales rep",
-    "sales manager",
-    "unlimited income",
-    "insurance sales",
-    "real estate agent",
-    "financial advisor",
+    "sales experience",
+    "door to door",
+    "insurance",
+    "financial",
+    "real estate",
     "business development",
-    "account executive",
-    "own boss",
+    "entrepreneur",
+    "looking for opportunity",
+    "career change",
+    "self motivated",
 ]
 
 
 class CraigslistSLCJobsWantedAgent(BaseAgent):
-    """Scrape Craigslist SLC jobs-wanted section for potential NWM recruits.
+    """Scrape Craigslist SLC resumes section for PEOPLE seeking work.
+
+    Targets the /search/res section where PEOPLE post their own resumes,
+    NOT the /search/jjj section where companies post job openings.
 
     These postings reveal people who are:
-    - Actively looking for employment
-    - Self-motivated enough to post publicly
+    - Actively marketing themselves for new opportunities
+    - Self-motivated enough to post their resume publicly
     - In the Salt Lake City / Utah metro area
     - Potentially open to financial services careers
     """

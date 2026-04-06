@@ -1,9 +1,10 @@
 """
-Craigslist Salt Lake City - Business For Sale Agent
+Craigslist Salt Lake City - Business For Sale Agent (Entrepreneurs Exiting)
 
-Scrapes the Salt Lake City Craigslist "business for sale" section.  People
-selling businesses may be transitioning careers and looking for their next
-opportunity, making them potential NWM financial advisor recruits.
+Scrapes the Salt Lake City Craigslist "business for sale" section (/search/bfa).
+PEOPLE selling their businesses are entrepreneurs transitioning careers and
+looking for their next opportunity -- not companies posting job openings.
+They are prime NWM financial advisor recruiting prospects.
 """
 
 from __future__ import annotations
@@ -34,18 +35,17 @@ SEARCH_KEYWORDS: list[str] = [
     "established business",
     "profitable",
     "turnkey",
-    "investment opportunity",
-    "service business",
     "agency for sale",
-    "restaurant for sale",
-    "retail business",
-    "insurance book",
-    "client base",
+    "insurance agency",
+    "financial practice",
 ]
 
 
 class CraigslistSLCBusinessAgent(BaseAgent):
-    """Scrape Craigslist SLC business-for-sale section for potential NWM recruits.
+    """Scrape Craigslist SLC business-for-sale section for PEOPLE exiting businesses.
+
+    Targets the /search/bfa section where PEOPLE list their businesses for
+    sale -- these are entrepreneurs transitioning, not company job postings.
 
     These postings reveal people who are:
     - Exiting a business and looking for their next career move

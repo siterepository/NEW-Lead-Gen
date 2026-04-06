@@ -40,27 +40,34 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 LEAD_SEARCH_QUERIES: list[str] = [
-    # ---- LinkedIn profile searches ----
-    'site:linkedin.com/in "sales manager" "Utah"',
-    'site:linkedin.com/in "business owner" "Utah"',
-    'site:linkedin.com/in "real estate agent" "Salt Lake City"',
-    'site:linkedin.com/in "insurance agent" "Utah"',
-    'site:linkedin.com/in "financial advisor" "Utah"',
-    'site:linkedin.com/in "entrepreneur" "Utah"',
-    'site:linkedin.com/in "account executive" "Utah"',
-    'site:linkedin.com/in "franchise owner" "Utah"',
-    # ---- Facebook business searches ----
-    'site:facebook.com "Utah" "business owner"',
-    'site:facebook.com "Salt Lake City" "entrepreneur"',
-    # ---- General professional searches ----
-    '"looking for sales professionals" "Utah"',
-    '"hiring sales reps" "Utah" "commission"',
-    '"Utah" "business for sale" "owner"',
-    '"career change" "Utah" "sales" OR "financial" OR "insurance"',
-    # ---- Local business directories ----
-    '"Utah" "real estate agent" "broker"',
-    '"Salt Lake City" "insurance agency" "owner"',
-    '"Utah" "financial planning" "firm"',
+    # ---- PEOPLE looking for work on LinkedIn ----
+    'site:linkedin.com/in "open to work" "sales" "Utah"',
+    'site:linkedin.com/in "seeking new opportunities" "Utah"',
+    'site:linkedin.com/in "looking for" "sales" "Utah"',
+    'site:linkedin.com/in "open to work" "insurance" "Utah"',
+    'site:linkedin.com/in "open to work" "financial" "Utah"',
+    'site:linkedin.com/in "open to work" "real estate" "Utah"',
+    'site:linkedin.com/in "career transition" "Utah"',
+    'site:linkedin.com/in "former" "door to door" "Utah"',
+    # ---- People expressing dissatisfaction / seeking change ----
+    'site:reddit.com "Utah" "hate my sales job"',
+    'site:reddit.com "Utah" "leaving door to door"',
+    'site:reddit.com "Utah" "burned out" "sales"',
+    'site:reddit.com "tired of" "commission" "Utah"',
+    'site:reddit.com "quit" "sales job" "Utah" OR "SLC"',
+    # ---- Door-to-door / direct sales people looking to leave ----
+    '"door to door" "looking for" "Utah"',
+    '"pest control" "tired" OR "leaving" OR "quit" "Utah"',
+    '"solar sales" "burned out" OR "looking for" "Utah"',
+    '"alarm sales" "done with" OR "leaving" "Utah"',
+    # ---- Entrepreneurs / business owners in transition ----
+    '"selling my business" "Utah"',
+    '"business for sale" "owner" "Utah"',
+    '"closing my business" "Utah"',
+    # ---- Insurance / financial people seeking change ----
+    '"insurance agent" "looking for" "Utah"',
+    '"financial advisor" "career change" "Utah"',
+    '"life insurance" "tired" OR "leaving" OR "burned out"',
 ]
 
 
