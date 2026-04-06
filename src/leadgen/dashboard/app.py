@@ -82,6 +82,37 @@ def _parse_lead(row):
     else:
         tier = "D"
 
+    # Determine WHY they were scraped: post vs account status
+    snippet = data.get("snippet", data.get("description", data.get("source_post_text", "")))
+    search_query = data.get("search_query", "")
+    detected_platform = data.get("detected_platform", "")
+
+    # Classify source type
+    if "reddit.com" in url:
+        source_type = "post"
+        source_label = "Reddit post"
+    elif "facebook.com" in url and "/posts/" in url:
+        source_type = "post"
+        source_label = "Facebook post"
+    elif "linkedin.com/in/" in url:
+        source_type = "profile"
+        source_label = "LinkedIn profile status"
+    elif "linkedin.com/jobs/" in url or "linkedin.com/pulse/" in url:
+        source_type = "post"
+        source_label = "LinkedIn post"
+    elif "indeed.com" in url:
+        source_type = "listing"
+        source_label = "Indeed listing"
+    elif "craigslist.org" in url:
+        source_type = "post"
+        source_label = "Craigslist post"
+    elif "ksl.com" in url:
+        source_type = "listing"
+        source_label = "KSL listing"
+    else:
+        source_type = "web"
+        source_label = "Web page"
+
     return {
         "id": row["id"],
         "name": display_name,
@@ -90,7 +121,12 @@ def _parse_lead(row):
         "linkedin_url": best_linkedin,
         "has_linkedin": has_linkedin,
         "reason": reason,
+        "snippet": (snippet or "")[:300],
+        "search_query": search_query,
+        "source_type": source_type,
+        "source_label": source_label,
         "platform": platform,
+        "detected_platform": detected_platform or platform,
         "score": score,
         "tier": tier,
         "scraped_at": scraped_at,
@@ -353,10 +389,10 @@ body { font-family: 'Inter', sans-serif; }
           <th class="py-3 px-3 w-8">#</th>
           <th class="py-3 px-3">Name / Title</th>
           <th class="py-3 px-3">LinkedIn</th>
-          <th class="py-3 px-3">Why</th>
+          <th class="py-3 px-3">Why Scraped</th>
           <th class="py-3 px-3">Source</th>
           <th class="py-3 px-3 text-center">Score</th>
-          <th class="py-3 px-3">Date</th>
+          <th class="py-3 px-3">Freshness</th>
           <th class="py-3 px-3 text-center">Actions</th>
         </tr>
       </thead>
@@ -449,6 +485,31 @@ function updateStats() {
 }
 
 // ---------------------------------------------------------------------------
+// Freshness and detail toggle
+// ---------------------------------------------------------------------------
+function getFreshness(dateStr) {
+  if (!dateStr) return '<span class="text-slate-600">Unknown</span>';
+  try {
+    const d = new Date(dateStr);
+    const now = new Date();
+    const hours = Math.floor((now - d) / 3600000);
+    if (hours < 1) return '<span class="text-emerald-400 font-semibold">Just now</span>';
+    if (hours < 24) return '<span class="text-emerald-400">' + hours + 'h ago</span>';
+    const days = Math.floor(hours / 24);
+    if (days <= 1) return '<span class="text-green-400">1 day</span>';
+    if (days <= 7) return '<span class="text-green-400">' + days + ' days</span>';
+    if (days <= 14) return '<span class="text-yellow-400">' + days + ' days</span>';
+    if (days <= 30) return '<span class="text-orange-400">' + days + ' days</span>';
+    return '<span class="text-red-400">' + days + ' days (stale)</span>';
+  } catch(e) { return '<span class="text-slate-600">Unknown</span>'; }
+}
+
+function toggleDetail(i) {
+  const row = document.getElementById('detail-' + i);
+  if (row) row.classList.toggle('hidden');
+}
+
+// ---------------------------------------------------------------------------
 // Filter + Sort
 // ---------------------------------------------------------------------------
 function getFiltered() {
@@ -465,8 +526,11 @@ function getFiltered() {
     list = list.filter(l =>
       (l.name || '').toLowerCase().includes(query) ||
       (l.reason || '').toLowerCase().includes(query) ||
+      (l.snippet || '').toLowerCase().includes(query) ||
+      (l.source_label || '').toLowerCase().includes(query) ||
       (l.platform || '').toLowerCase().includes(query) ||
       (l.url || '').toLowerCase().includes(query) ||
+      (l.city || '').toLowerCase().includes(query) ||
       (l.title || '').toLowerCase().includes(query)
     );
   }
@@ -560,18 +624,50 @@ function renderTable() {
 
     const rowClass = i % 2 === 0 ? 'bg-slate-950' : 'bg-slate-900/30';
 
-    return `<tr class="${rowClass} hover:bg-slate-800/50 transition-colors border-b border-slate-800/50">
+    // Source type badge
+    const stBadge = l.source_type === 'post'
+      ? '<span class="px-1.5 py-0.5 bg-purple-900/50 text-purple-300 rounded text-[10px] font-medium">POST</span>'
+      : l.source_type === 'profile'
+      ? '<span class="px-1.5 py-0.5 bg-blue-900/50 text-blue-300 rounded text-[10px] font-medium">PROFILE</span>'
+      : '<span class="px-1.5 py-0.5 bg-slate-700 text-slate-400 rounded text-[10px] font-medium">WEB</span>';
+
+    // Snippet (why they were scraped)
+    const snippet = l.snippet ? esc(l.snippet).substring(0, 150) + (l.snippet.length > 150 ? '...' : '') : '';
+
+    // Freshness
+    const freshness = getFreshness(l.scraped_at);
+
+    return `<tr class="${rowClass} hover:bg-slate-800/50 transition-colors border-b border-slate-800/50 cursor-pointer" onclick="toggleDetail(${i})">
       <td class="py-3 px-3 text-slate-600 text-xs">${i + 1}</td>
       <td class="py-3 px-3">
         <div class="font-medium text-white text-sm">${esc(l.name)}</div>
         ${l.title && l.title !== l.name ? `<div class="text-xs text-slate-500 truncate max-w-xs">${esc(l.title)}</div>` : ''}
       </td>
       <td class="py-3 px-3">${linkedinCell}</td>
-      <td class="py-3 px-3">${reason}</td>
+      <td class="py-3 px-3">
+        <div class="flex items-center gap-1.5 mb-1">${stBadge} ${reason}</div>
+        ${snippet ? `<div class="text-[11px] text-slate-500 leading-snug max-w-sm">${snippet}</div>` : ''}
+      </td>
       <td class="py-3 px-3">${sourceCell}</td>
       <td class="py-3 px-3 text-center">${scoreBadge(l.score, l.tier)}</td>
-      <td class="py-3 px-3 text-slate-500 text-xs whitespace-nowrap">${formatDate(l.scraped_at)}</td>
+      <td class="py-3 px-3 text-xs whitespace-nowrap">${freshness}</td>
       <td class="py-3 px-3 text-center">${enhanceBtn}</td>
+    </tr>
+    <tr id="detail-${i}" class="hidden bg-slate-900/80 border-b border-slate-800/50">
+      <td colspan="8" class="px-6 py-4">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+          <div>
+            <p class="text-slate-500 text-xs font-semibold uppercase mb-1">Why this lead exists</p>
+            <p class="text-slate-300">${l.source_label || 'Web search'}: ${reason}</p>
+            ${snippet ? `<p class="text-slate-400 text-xs mt-2 italic">"${snippet}"</p>` : ''}
+          </div>
+          <div>
+            <p class="text-slate-500 text-xs font-semibold uppercase mb-1">Source</p>
+            <p class="text-blue-400 text-xs break-all"><a href="${esc(l.url)}" target="_blank" class="hover:underline">${esc(l.url)}</a></p>
+            ${l.search_query ? `<p class="text-slate-600 text-[10px] mt-1">Found via: "${esc(l.search_query)}"</p>` : ''}
+          </div>
+        </div>
+      </td>
     </tr>`;
   });
 
