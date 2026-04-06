@@ -18,6 +18,7 @@ import yaml
 from leadgen.models.lead import Lead, AgentRun
 from leadgen.pipeline.normalizer import Normalizer
 from leadgen.pipeline.deduplicator import Deduplicator
+from leadgen.scoring.engine import ScoringEngine
 from leadgen.db.queue import JobQueue
 
 # Import all agent classes for auto-registration
@@ -80,6 +81,7 @@ class Orchestrator:
         self.agent_statuses: dict[str, dict] = {}
         self.normalizer = Normalizer()
         self.deduplicator = Deduplicator()
+        self.scoring_engine = ScoringEngine()
         self.db = JobQueue(db_path)
         self._existing_leads: list[Lead] = []
 
@@ -217,20 +219,31 @@ class Orchestrator:
             existing = await self.deduplicator.is_duplicate(lead, self._existing_leads)
 
             if existing is None:
-                # New lead
-                # Step 3: Score (via external scorer -- placeholder)
-                # Scoring is handled by the scoring module, not inlined here.
-                self._existing_leads.append(lead)
-                new_count += 1
-                logger.debug("New lead: %s %s", lead.first_name, lead.last_name)
+                # New lead -- Step 3: Score
+                self.scoring_engine.score_lead(lead)
+                # Only keep leads scoring 25+ (C-tier or above)
+                if lead.total_score >= 25:
+                    self._existing_leads.append(lead)
+                    new_count += 1
+                    logger.debug(
+                        "New lead: %s %s (score=%d, tier=%s)",
+                        lead.first_name, lead.last_name,
+                        lead.total_score, lead.tier,
+                    )
+                else:
+                    logger.debug(
+                        "Lead dropped (low score): %s %s (score=%d)",
+                        lead.first_name, lead.last_name, lead.total_score,
+                    )
             else:
-                # Duplicate -- merge
+                # Duplicate -- merge then re-score
                 merged = await self.deduplicator.merge_leads(existing, lead)
-                # Step 4: Re-score after merge (placeholder for scoring module)
+                self.scoring_engine.score_lead(merged)
                 dupe_count += 1
                 logger.debug(
-                    "Duplicate merged: %s %s (sources=%d)",
-                    merged.first_name, merged.last_name, merged.sources_count,
+                    "Duplicate merged: %s %s (sources=%d, score=%d, tier=%s)",
+                    merged.first_name, merged.last_name,
+                    merged.sources_count, merged.total_score, merged.tier,
                 )
 
         return new_count, dupe_count

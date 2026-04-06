@@ -24,6 +24,8 @@ except ImportError:
 
 import httpx
 
+from leadgen.pipeline.relevance_filter import RelevanceFilter
+
 logger = logging.getLogger(__name__)
 
 
@@ -136,6 +138,9 @@ class BaseAgent(ABC):
         self.config = config
         self.db = db
 
+        # Relevance filter - drops irrelevant items before storage
+        self.relevance_filter = RelevanceFilter()
+
         # Rate limiter - honour per-agent config or default to 30 rpm
         rpm = self.config.get("requests_per_minute", 30)
         self.rate_limiter = RateLimiter(requests_per_minute=rpm)
@@ -235,11 +240,21 @@ class BaseAgent(ABC):
             except Exception as exc:
                 logger.warning("[%s] Failed to parse item: %s", self.name, exc)
 
-        # Persist
+        # Filter for relevance before storing
+        relevant, rejected = self.relevance_filter.filter_batch(parsed)
+        logger.info(
+            "[%s] Relevance filter: %d relevant, %d rejected out of %d",
+            self.name,
+            len(relevant),
+            len(rejected),
+            len(parsed),
+        )
+
+        # Persist only relevant items
         new_count = 0
         dup_count = 0
         try:
-            new_count, dup_count = await self.store_raw_scrapes(parsed)
+            new_count, dup_count = await self.store_raw_scrapes(relevant)
         except Exception as exc:
             logger.error("[%s] Failed to store results: %s", self.name, exc)
             await self.log_run(
@@ -249,14 +264,16 @@ class BaseAgent(ABC):
                 items_dup=0,
                 error=f"Storage error: {exc}",
             )
-            return parsed
+            return relevant
 
         logger.info(
-            "[%s] Scrape complete. found=%d new=%d dup=%d",
+            "[%s] Scrape complete. found=%d relevant=%d new=%d dup=%d rejected=%d",
             self.name,
             len(parsed),
+            len(relevant),
             new_count,
             dup_count,
+            len(rejected),
         )
         await self.log_run(
             status="success",
@@ -264,7 +281,7 @@ class BaseAgent(ABC):
             items_new=new_count,
             items_dup=dup_count,
         )
-        return parsed
+        return relevant
 
     # ------------------------------------------------------------------
     # Concrete: data persistence

@@ -43,6 +43,17 @@ echo "--- Exporting leads ---" | tee -a "$LOG_FILE"
 leadgen export --output "data/exports/leads_$DATE.csv" >> "$LOG_FILE" 2>&1 || true
 leadgen export --tier A --output "data/exports/a_tier_$DATE.csv" >> "$LOG_FILE" 2>&1 || true
 
+# Quality report
+echo "--- Quality Report ---" | tee -a "$LOG_FILE"
+python3 -c "
+import sqlite3, json
+db = sqlite3.connect('data/leadgen.db')
+total = db.execute('SELECT COUNT(*) FROM jobs WHERE job_type=\"raw_scrape\"').fetchone()[0]
+# Count items with relevance info
+print(f'Total items in queue: {total}')
+db.close()
+" >> "$LOG_FILE" 2>&1
+
 # Clean old logs (keep last 30 days)
 find "$LOG_DIR" -name "scrape_*.log" -mtime +30 -delete 2>/dev/null || true
 
