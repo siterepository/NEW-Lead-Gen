@@ -19,6 +19,7 @@ from leadgen.models.lead import Lead, AgentRun
 from leadgen.pipeline.normalizer import Normalizer
 from leadgen.pipeline.deduplicator import Deduplicator
 from leadgen.scoring.engine import ScoringEngine
+from leadgen.enrichment.nwm_connections import NWMConnectionChecker
 from leadgen.db.queue import JobQueue
 
 # Import all agent classes for auto-registration
@@ -88,6 +89,7 @@ class Orchestrator:
         self.normalizer = Normalizer()
         self.deduplicator = Deduplicator()
         self.scoring_engine = ScoringEngine()
+        self.nwm_checker = NWMConnectionChecker()
         self.db = JobQueue(db_path)
         self._existing_leads: list[Lead] = []
 
@@ -110,6 +112,12 @@ class Orchestrator:
         if not configs:
             logger.warning("No agents to run.")
             return
+
+        # Initialize NWM connection checker (loads employee list from cache or Apollo)
+        await self.nwm_checker.initialize()
+        nwm_count = self.nwm_checker.get_nwm_employee_count()
+        if nwm_count > 0:
+            logger.info("NWM connection checker ready: %d employees loaded", nwm_count)
 
         logger.info("Starting %d agent(s): %s", len(configs), list(configs.keys()))
 
@@ -225,7 +233,9 @@ class Orchestrator:
             existing = await self.deduplicator.is_duplicate(lead, self._existing_leads)
 
             if existing is None:
-                # New lead -- Step 3: Score
+                # New lead -- Step 3: Check NWM connections
+                self.nwm_checker.check_lead(lead)
+                # Step 4: Score (includes NWM boost if flagged)
                 self.scoring_engine.score_lead(lead)
                 # Only keep leads scoring 25+ (C-tier or above)
                 if lead.total_score >= 25:
