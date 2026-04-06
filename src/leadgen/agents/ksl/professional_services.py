@@ -1,9 +1,13 @@
 """
-KSL Classifieds - Professional Services Agent
+KSL Jobs - Professional Services Agent
 
-Scrapes KSL Classifieds for accountants, financial planners, lawyers, and
-other professionals offering services.  These individuals have transferable
-skills and client-facing experience that maps well to NWM financial advising.
+Scrapes KSL Jobs (ksl.com/jobs) for accountants, financial planners, lawyers,
+and other professionals.  These individuals have transferable skills and
+client-facing experience that maps well to NWM financial advising.
+
+NOTE: Switched from classifieds.ksl.com to ksl.com/jobs because the
+classifieds general marketplace returns cars/appliances instead of
+professional listings when searching by keyword.
 """
 
 from __future__ import annotations
@@ -25,37 +29,24 @@ logger = logging.getLogger(__name__)
 # Search configuration
 # ---------------------------------------------------------------------------
 
-BASE_URL = "https://classifieds.ksl.com"
+BASE_URL = "https://www.ksl.com/jobs"
 
 SEARCH_KEYWORDS: list[str] = [
-    "accountant",
     "CPA",
-    "bookkeeper",
     "financial planner",
-    "financial advisor",
-    "tax preparation",
-    "tax services",
-    "lawyer",
-    "attorney",
-    "paralegal",
-    "real estate agent",
-    "insurance agent",
-    "mortgage broker",
-    "investment",
-    "wealth management",
-    "estate planning",
-    "notary",
-]
-
-CATEGORY_SLUGS: list[str] = [
-    "Services",
-    "Business-Opportunities",
-    "Career-Services",
+    "insurance broker",
+    "real estate broker",
+    "business attorney",
+    "tax advisor",
+    "investment advisor",
+    "wealth manager",
+    "certified financial planner",
+    "financial consultant",
 ]
 
 
 class KSLProfessionalServicesAgent(BaseAgent):
-    """Scrape KSL Classifieds for professional service providers in Utah.
+    """Scrape KSL Jobs for professional service providers in Utah.
 
     These listings reveal people who are:
     - Licensed professionals with client bases
@@ -79,23 +70,19 @@ class KSLProfessionalServicesAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     def get_search_urls(self) -> list[str]:
-        """Build search URLs targeting professional service providers."""
+        """Build search URLs targeting professional service providers on KSL Jobs.
+
+        Uses the KSL Jobs search endpoint:
+            https://www.ksl.com/jobs/search?keyword=...&location=Utah
+        """
         urls: list[str] = []
 
         for keyword in SEARCH_KEYWORDS:
-            for category in CATEGORY_SLUGS:
-                params = {
-                    "keyword": keyword,
-                    "category": category,
-                    "state": "Utah",
-                    "sort": "newest",
-                }
-                url = f"{BASE_URL}/search/?{urlencode(params, quote_via=quote_plus)}"
-                urls.append(url)
-
-        for category in CATEGORY_SLUGS:
-            params = {"category": category, "state": "Utah", "sort": "newest"}
-            url = f"{BASE_URL}/search/?{urlencode(params, quote_via=quote_plus)}"
+            params = {
+                "keyword": keyword,
+                "location": "Utah",
+            }
+            url = f"{BASE_URL}/search?{urlencode(params, quote_via=quote_plus)}"
             urls.append(url)
 
         logger.info("[%s] Generated %d search URLs", self.name, len(urls))
@@ -106,9 +93,9 @@ class KSLProfessionalServicesAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     async def scrape(self) -> list[dict]:
-        """Scrape KSL for professional service provider listings.
+        """Scrape KSL Jobs for professional service provider listings.
 
-        Uses httpx to fetch KSL pages and extracts listing data from
+        Uses httpx to fetch KSL Jobs pages and extracts listing data from
         the embedded Next.js RSC payload (no browser rendering needed).
         """
         all_items: list[dict] = []

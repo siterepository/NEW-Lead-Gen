@@ -29,18 +29,18 @@ BASE_URL = "https://saltlakecity.craigslist.org"
 SEARCH_PATH = "/search/res"  # resumes section
 
 SEARCH_KEYWORDS: list[str] = [
-    "sales",
-    "business development",
-    "finance",
-    "accounting",
-    "management",
-    "marketing",
-    "insurance",
-    "real estate",
-    "customer service",
-    "leadership",
+    "sales manager",
+    "business owner",
+    "real estate agent",
+    "insurance agent",
+    "financial advisor",
+    "account executive",
     "entrepreneur",
-    "professional",
+    "business development",
+    "franchise",
+    "broker",
+    "financial planner",
+    "sales director",
 ]
 
 
@@ -153,7 +153,18 @@ class CraigslistSLCResumesAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     def _parse_listings(self, html: str) -> list[dict]:
-        """Extract listings from Craigslist server-rendered HTML via regex."""
+        """Extract listings from Craigslist server-rendered HTML via regex.
+
+        CL's current HTML structure uses:
+            <li class="cl-static-search-result">
+              <a href="URL">
+                <div class="title">TITLE</div>
+                <div class="details">
+                  <div class="price">PRICE</div>
+                </div>
+              </a>
+            </li>
+        """
         items: list[dict] = []
 
         row_pattern = re.compile(
@@ -165,36 +176,50 @@ class CraigslistSLCResumesAgent(BaseAgent):
         for m in row_pattern.finditer(html):
             block = m.group(0)
 
-            # -- Title + URL --
-            title_match = re.search(
-                r'<a[^>]*class="[^"]*(?:titlestring|result-title|cl-app-anchor)[^"]*"'
-                r'[^>]*href="([^"]*)"[^>]*>(.*?)</a>',
-                block, re.DOTALL,
-            )
-            if not title_match:
+            # -- Title (new CL structure: <div class="title">TITLE</div>) --
+            title = ""
+            title_match = re.search(r'<div class="title">([^<]+)</div>', block)
+            if title_match:
+                title = title_match.group(1).strip()
+            else:
                 title_match = re.search(
-                    r'<a[^>]*href="([^"]*)"[^>]*>(.*?)</a>',
+                    r'<a[^>]*class="[^"]*(?:titlestring|result-title)[^"]*"'
+                    r'[^>]*>(.*?)</a>',
                     block, re.DOTALL,
                 )
-            if not title_match:
-                continue
-
-            href = title_match.group(1).strip()
-            title = re.sub(r'<[^>]+>', '', title_match.group(2)).strip()
+                if title_match:
+                    title = re.sub(r'<[^>]+>', '', title_match.group(1)).strip()
             if not title:
                 continue
 
-            url = href if href.startswith("http") else f"{BASE_URL}{href}"
+            # -- URL --
+            url = ""
+            url_match = re.search(
+                r'<a href="(https://[^"]+craigslist[^"]+\.html)"', block
+            )
+            if url_match:
+                url = url_match.group(1).strip()
+            else:
+                url_match = re.search(r'<a[^>]*href="([^"]*)"', block)
+                if url_match:
+                    href = url_match.group(1).strip()
+                    url = href if href.startswith("http") else f"{BASE_URL}{href}"
+            if not url:
+                continue
 
             # -- Location --
             location = ""
-            loc_match = re.search(
-                r'<span[^>]*class="[^"]*(?:result-hood|nearby|supertitle)[^"]*"[^>]*>'
-                r'(.*?)</span>',
-                block, re.DOTALL,
-            )
+            loc_match = re.search(r'<div class="location">([^<]+)</div>', block)
             if loc_match:
-                location = re.sub(r'<[^>]+>', '', loc_match.group(1)).strip().strip("() ")
+                location = loc_match.group(1).strip()
+            else:
+                loc_match = re.search(
+                    r'<span[^>]*class="[^"]*(?:result-hood|nearby|supertitle)[^"]*"[^>]*>'
+                    r'(.*?)</span>',
+                    block, re.DOTALL,
+                )
+                if loc_match:
+                    location = re.sub(r'<[^>]+>', '', loc_match.group(1)).strip().strip("() ")
 
             # -- Date --
             posted_date = ""

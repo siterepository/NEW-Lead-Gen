@@ -1,10 +1,14 @@
 """
-KSL Classifieds - Services Offered Agent
+KSL Jobs - Services Offered Agent
 
-Scrapes KSL Classifieds for people offering professional services.
+Scrapes KSL Jobs (ksl.com/jobs) for people offering professional services.
 These individuals are often freelancers, consultants, side hustlers,
 or people between jobs -- all strong NWM financial advisor recruiting
 candidates because they are entrepreneurial and self-motivated.
+
+NOTE: Switched from classifieds.ksl.com to ksl.com/jobs because the
+classifieds general marketplace returns cars/appliances instead of
+professional listings when searching by keyword.
 """
 
 from __future__ import annotations
@@ -28,45 +32,20 @@ logger = logging.getLogger(__name__)
 # Search configuration
 # ---------------------------------------------------------------------------
 
-BASE_URL = "https://classifieds.ksl.com"
+BASE_URL = "https://www.ksl.com/jobs"
 
-# Keywords targeting professional-service providers
+# Keywords targeting professional financial/business service providers
 SEARCH_KEYWORDS: list[str] = [
-    "consulting",
-    "financial services",
-    "coaching",
-    "business consulting",
-    "real estate services",
-    "insurance",
-    "tax preparation",
-    "bookkeeping",
-    "personal training",
-    "tutoring",
-    "marketing services",
-    "sales consultant",
-    "life coaching",
-    "career coaching",
-    "professional services",
-    "accounting",
-    "financial planning",
-    "investment",
-    "mortgage",
-    "notary",
-]
-
-# KSL classifieds categories for services offered
-CATEGORY_SLUGS: list[str] = [
-    "Services",
-    "Professional-Services",
-    "Financial-Services",
-    "Consulting",
-    "Coaching-Tutoring",
-    "Real-Estate-Services",
+    "financial planner",
+    "business consultant",
+    "CPA",
+    "insurance broker",
+    "wealth manager",
 ]
 
 
 class KSLServicesOfferedAgent(BaseAgent):
-    """Scrape KSL Classifieds for people advertising professional services.
+    """Scrape KSL Jobs for people advertising professional services.
 
     These listings reveal individuals who are:
     - Freelancers / independent consultants (entrepreneurial mindset)
@@ -94,31 +73,19 @@ class KSLServicesOfferedAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     def get_search_urls(self) -> list[str]:
-        """Build search URLs for KSL classifieds targeting services offered.
+        """Build search URLs for KSL Jobs targeting services offered.
 
-        Combines service-related keywords with category slugs.
+        Uses the KSL Jobs search endpoint:
+            https://www.ksl.com/jobs/search?keyword=...&location=Utah
         """
         urls: list[str] = []
 
         for keyword in SEARCH_KEYWORDS:
-            for category in CATEGORY_SLUGS:
-                params = {
-                    "keyword": keyword,
-                    "category": category,
-                    "state": "Utah",
-                    "sort": "newest",
-                }
-                url = f"{BASE_URL}/search/?{urlencode(params, quote_via=quote_plus)}"
-                urls.append(url)
-
-        # Broad category-only URLs (no keyword filter)
-        for category in CATEGORY_SLUGS:
             params = {
-                "category": category,
-                "state": "Utah",
-                "sort": "newest",
+                "keyword": keyword,
+                "location": "Utah",
             }
-            url = f"{BASE_URL}/search/?{urlencode(params, quote_via=quote_plus)}"
+            url = f"{BASE_URL}/search?{urlencode(params, quote_via=quote_plus)}"
             urls.append(url)
 
         logger.info("[%s] Generated %d search URLs", self.name, len(urls))
@@ -129,9 +96,9 @@ class KSLServicesOfferedAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     async def scrape(self) -> list[dict]:
-        """Execute scraping against KSL Classifieds services categories.
+        """Execute scraping against KSL Jobs services categories.
 
-        Uses httpx to fetch KSL pages and extracts listing data from
+        Uses httpx to fetch KSL Jobs pages and extracts listing data from
         the embedded Next.js RSC payload (no browser rendering needed).
         """
         all_items: list[dict] = []

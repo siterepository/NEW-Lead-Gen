@@ -1,9 +1,13 @@
 """
-KSL Classifieds - Resume Posts Agent
+KSL Jobs - Resume Posts Agent
 
-Scrapes KSL Classifieds for people actively posting resumes and "jobs wanted"
-ads.  These individuals are explicitly seeking new employment and may be
-open to a career in financial services with NWM.
+Scrapes KSL Jobs (ksl.com/jobs) for people actively posting resumes and
+"jobs wanted" ads.  These individuals are explicitly seeking new employment
+and may be open to a career in financial services with NWM.
+
+NOTE: Switched from classifieds.ksl.com to ksl.com/jobs because the
+classifieds general marketplace returns cars/appliances instead of
+professional listings when searching by keyword.
 """
 
 from __future__ import annotations
@@ -25,32 +29,22 @@ logger = logging.getLogger(__name__)
 # Search configuration
 # ---------------------------------------------------------------------------
 
-BASE_URL = "https://classifieds.ksl.com"
+BASE_URL = "https://www.ksl.com/jobs"
 
 SEARCH_KEYWORDS: list[str] = [
-    "resume",
-    "jobs wanted",
-    "seeking position",
-    "available immediately",
-    "hire me",
-    "looking for employment",
-    "experienced professional",
-    "open to opportunities",
-    "career transition",
-    "seeking new role",
-    "will relocate",
-    "motivated professional",
-]
-
-CATEGORY_SLUGS: list[str] = [
-    "Jobs",
-    "Career-Services",
-    "Services",
+    "sales manager",
+    "business development",
+    "account executive",
+    "real estate agent",
+    "insurance agent",
+    "financial services",
+    "sales director",
+    "financial advisor",
 ]
 
 
 class KSLResumePostsAgent(BaseAgent):
-    """Scrape KSL Classifieds for people posting resumes / jobs-wanted ads.
+    """Scrape KSL Jobs for people posting resumes / jobs-wanted ads.
 
     These listings reveal people who are:
     - Actively seeking employment (posted a resume)
@@ -74,24 +68,19 @@ class KSLResumePostsAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     def get_search_urls(self) -> list[str]:
-        """Build search URLs targeting resume posts and jobs-wanted listings."""
+        """Build search URLs targeting resume posts and jobs-wanted listings on KSL Jobs.
+
+        Uses the KSL Jobs search endpoint:
+            https://www.ksl.com/jobs/search?keyword=...&location=Utah
+        """
         urls: list[str] = []
 
         for keyword in SEARCH_KEYWORDS:
-            for category in CATEGORY_SLUGS:
-                params = {
-                    "keyword": keyword,
-                    "category": category,
-                    "state": "Utah",
-                    "sort": "newest",
-                }
-                url = f"{BASE_URL}/search/?{urlencode(params, quote_via=quote_plus)}"
-                urls.append(url)
-
-        # Broad category-only URLs
-        for category in CATEGORY_SLUGS:
-            params = {"category": category, "state": "Utah", "sort": "newest"}
-            url = f"{BASE_URL}/search/?{urlencode(params, quote_via=quote_plus)}"
+            params = {
+                "keyword": keyword,
+                "location": "Utah",
+            }
+            url = f"{BASE_URL}/search?{urlencode(params, quote_via=quote_plus)}"
             urls.append(url)
 
         logger.info("[%s] Generated %d search URLs", self.name, len(urls))
@@ -102,9 +91,9 @@ class KSLResumePostsAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     async def scrape(self) -> list[dict]:
-        """Scrape KSL for resume / jobs-wanted posts.
+        """Scrape KSL Jobs for resume / jobs-wanted posts.
 
-        Uses httpx to fetch KSL pages and extracts listing data from
+        Uses httpx to fetch KSL Jobs pages and extracts listing data from
         the embedded Next.js RSC payload (no browser rendering needed).
         """
         all_items: list[dict] = []

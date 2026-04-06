@@ -1,10 +1,13 @@
 """
-KSL Classifieds - Job Seekers Agent
+KSL Jobs - Job Seekers Agent
 
-Scrapes KSL Classifieds (classifieds.ksl.com) for people posting in
-job/career/services categories who might be good NWM financial advisor
-recruits.  Targets people actively looking for work, career changes,
-or new opportunities in Utah.
+Scrapes KSL Jobs (ksl.com/jobs) for people posting in job/career categories
+who might be good NWM financial advisor recruits.  Targets people actively
+looking for work, career changes, or new opportunities in Utah.
+
+NOTE: Switched from classifieds.ksl.com to ksl.com/jobs because the
+classifieds general marketplace returns cars/appliances instead of
+professional listings when searching by keyword.
 """
 
 from __future__ import annotations
@@ -28,38 +31,21 @@ logger = logging.getLogger(__name__)
 # Search configuration
 # ---------------------------------------------------------------------------
 
-BASE_URL = "https://classifieds.ksl.com"
+BASE_URL = "https://www.ksl.com/jobs"
 
-# Keywords that surface people seeking work / career change / opportunities
+# Keywords targeting professionals with transferable skills for financial advising
 SEARCH_KEYWORDS: list[str] = [
-    "career change",
-    "looking for work",
-    "seeking employment",
-    "opportunity",
-    "available for hire",
-    "sales experience",
-    "business owner",
-    "entrepreneur",
-    "real estate",
-    "insurance",
-    "coaching",
-    "freelance",
-    "consultant",
-    "side hustle",
-    "self employed",
-]
-
-# KSL classifieds category IDs / slugs relevant to job seekers
-CATEGORY_SLUGS: list[str] = [
-    "Services",
-    "Jobs",
-    "Business-Opportunities",
-    "Career-Services",
+    "sales manager",
+    "business development",
+    "account executive",
+    "financial advisor",
+    "insurance agent",
+    "real estate agent",
 ]
 
 
 class KSLJobSeekersAgent(BaseAgent):
-    """Scrape KSL Classifieds for job seekers and career-changers in Utah.
+    """Scrape KSL Jobs for job seekers and career-changers in Utah.
 
     These listings often reveal people who are:
     - Between jobs (open to new career paths)
@@ -87,33 +73,19 @@ class KSLJobSeekersAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     def get_search_urls(self) -> list[str]:
-        """Build search URLs for KSL classifieds targeting job seekers.
+        """Build search URLs for KSL Jobs targeting job seekers.
 
-        Combines keywords with category slugs to produce a comprehensive
-        list of search URLs.  Uses the KSL query-string pattern:
-            https://classifieds.ksl.com/search/?keyword=...&category=...&state=Utah
+        Uses the KSL Jobs search endpoint:
+            https://www.ksl.com/jobs/search?keyword=...&location=Utah
         """
         urls: list[str] = []
 
         for keyword in SEARCH_KEYWORDS:
-            for category in CATEGORY_SLUGS:
-                params = {
-                    "keyword": keyword,
-                    "category": category,
-                    "state": "Utah",
-                    "sort": "newest",
-                }
-                url = f"{BASE_URL}/search/?{urlencode(params, quote_via=quote_plus)}"
-                urls.append(url)
-
-        # Also add broad category-only URLs (no keyword filter)
-        for category in CATEGORY_SLUGS:
             params = {
-                "category": category,
-                "state": "Utah",
-                "sort": "newest",
+                "keyword": keyword,
+                "location": "Utah",
             }
-            url = f"{BASE_URL}/search/?{urlencode(params, quote_via=quote_plus)}"
+            url = f"{BASE_URL}/search?{urlencode(params, quote_via=quote_plus)}"
             urls.append(url)
 
         logger.info("[%s] Generated %d search URLs", self.name, len(urls))
@@ -124,9 +96,9 @@ class KSLJobSeekersAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     async def scrape(self) -> list[dict]:
-        """Execute the main scraping logic against KSL Classifieds.
+        """Execute the main scraping logic against KSL Jobs.
 
-        Uses httpx to fetch KSL pages and extracts listing data from
+        Uses httpx to fetch KSL Jobs pages and extracts listing data from
         the embedded Next.js RSC payload (no browser rendering needed).
         """
         all_items: list[dict] = []
@@ -190,7 +162,7 @@ class KSLJobSeekersAgent(BaseAgent):
                             "price": price,
                             "source_url": f"{BASE_URL}/listing/{lid}" if lid else url,
                             "platform": "ksl",
-                            "category": "services",
+                            "category": "job_seekers",
                             "scraped_at": datetime.now(timezone.utc).isoformat(),
                         })
 

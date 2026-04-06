@@ -7,6 +7,12 @@ are prime NWM recruiting targets because they are:
 - Looking for their next venture
 - Potentially have capital from the sale
 - Have sales, people, and leadership skills
+
+NOTE: This agent intentionally stays on classifieds.ksl.com (not ksl.com/jobs)
+because business-for-sale listings belong in the classifieds marketplace.
+Other KSL agents were moved to ksl.com/jobs to avoid getting general
+marketplace items (cars, appliances) for professional keyword searches.
+Be aware that KSL classifieds may return mixed results for some keywords.
 """
 
 from __future__ import annotations
@@ -32,32 +38,30 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://classifieds.ksl.com"
 
-# Keywords targeting business-for-sale and business-opportunity listings
+# Keywords targeting businesses for sale and franchise opportunities
 SEARCH_KEYWORDS: list[str] = [
     "business for sale",
     "franchise",
-    "turnkey business",
     "established business",
-    "business opportunity",
-    "retiring owner",
-    "owner financing",
-    "revenue",
     "profitable business",
-    "client list",
-    "customer base",
-    "inventory included",
-    "relocating",
-    "must sell",
-    "partnership",
-    "investment opportunity",
+    "turnkey business",
+    "restaurant for sale",
+    "retail store",
+    "service business",
+    "franchise opportunity",
+    "business opportunity",
+    "owner retiring",
+    "client base included",
+    "agency for sale",
+    "insurance book",
 ]
 
 # KSL classifieds categories for business sales
 CATEGORY_SLUGS: list[str] = [
-    "Business-Opportunities",
     "Businesses-For-Sale",
-    "Commercial",
+    "Business-Opportunities",
     "Franchise",
+    "Commercial",
 ]
 
 

@@ -1,9 +1,13 @@
 """
-KSL Classifieds - Gig Workers Agent
+KSL Jobs - Gig Workers Agent
 
-Scrapes KSL Classifieds gigs section for freelancers and gig workers offering
-services.  These individuals are entrepreneurial, income-motivated, and may
-be open to a more stable career path with NWM.
+Scrapes KSL Jobs (ksl.com/jobs) for freelancers and gig workers.  These
+individuals are entrepreneurial, income-motivated, and may be open to a
+more stable career path with NWM.
+
+NOTE: Switched from classifieds.ksl.com to ksl.com/jobs because the
+classifieds general marketplace returns cars/appliances instead of
+professional listings when searching by keyword.
 """
 
 from __future__ import annotations
@@ -25,36 +29,22 @@ logger = logging.getLogger(__name__)
 # Search configuration
 # ---------------------------------------------------------------------------
 
-BASE_URL = "https://classifieds.ksl.com"
+BASE_URL = "https://www.ksl.com/jobs"
 
 SEARCH_KEYWORDS: list[str] = [
-    "freelance",
-    "gig",
-    "side hustle",
-    "contract work",
-    "part time",
+    "marketing consultant",
+    "sales consultant",
+    "business development",
     "independent contractor",
-    "handyman",
-    "personal assistant",
-    "delivery",
-    "moving help",
-    "cleaning service",
-    "tutoring",
-    "photography",
-    "web design",
-    "graphic design",
-    "social media manager",
-]
-
-CATEGORY_SLUGS: list[str] = [
-    "Services",
-    "Gigs",
-    "Jobs",
+    "business consultant",
+    "financial consultant",
+    "insurance sales",
+    "commission sales",
 ]
 
 
 class KSLGigWorkersAgent(BaseAgent):
-    """Scrape KSL Classifieds for gig workers and freelancers in Utah.
+    """Scrape KSL Jobs for gig workers and freelancers in Utah.
 
     These listings reveal people who are:
     - Hustling for income via multiple gigs
@@ -78,23 +68,19 @@ class KSLGigWorkersAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     def get_search_urls(self) -> list[str]:
-        """Build search URLs targeting gig workers and freelancers."""
+        """Build search URLs targeting gig workers and freelancers on KSL Jobs.
+
+        Uses the KSL Jobs search endpoint:
+            https://www.ksl.com/jobs/search?keyword=...&location=Utah
+        """
         urls: list[str] = []
 
         for keyword in SEARCH_KEYWORDS:
-            for category in CATEGORY_SLUGS:
-                params = {
-                    "keyword": keyword,
-                    "category": category,
-                    "state": "Utah",
-                    "sort": "newest",
-                }
-                url = f"{BASE_URL}/search/?{urlencode(params, quote_via=quote_plus)}"
-                urls.append(url)
-
-        for category in CATEGORY_SLUGS:
-            params = {"category": category, "state": "Utah", "sort": "newest"}
-            url = f"{BASE_URL}/search/?{urlencode(params, quote_via=quote_plus)}"
+            params = {
+                "keyword": keyword,
+                "location": "Utah",
+            }
+            url = f"{BASE_URL}/search?{urlencode(params, quote_via=quote_plus)}"
             urls.append(url)
 
         logger.info("[%s] Generated %d search URLs", self.name, len(urls))
@@ -105,9 +91,9 @@ class KSLGigWorkersAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     async def scrape(self) -> list[dict]:
-        """Scrape KSL for gig worker listings.
+        """Scrape KSL Jobs for gig worker listings.
 
-        Uses httpx to fetch KSL pages and extracts listing data from
+        Uses httpx to fetch KSL Jobs pages and extracts listing data from
         the embedded Next.js RSC payload (no browser rendering needed).
         """
         all_items: list[dict] = []

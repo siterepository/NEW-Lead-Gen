@@ -1,9 +1,14 @@
 """
-KSL Classifieds - Coaching & Consulting Agent
+KSL Jobs - Coaching & Consulting Agent
 
-Scrapes KSL Classifieds for life coaches, business consultants, and executive
-coaches.  These individuals have strong interpersonal skills, entrepreneurial
-drive, and existing client networks -- ideal NWM recruiting prospects.
+Scrapes KSL Jobs (ksl.com/jobs) for life coaches, business consultants, and
+executive coaches.  These individuals have strong interpersonal skills,
+entrepreneurial drive, and existing client networks -- ideal NWM recruiting
+prospects.
+
+NOTE: Switched from classifieds.ksl.com to ksl.com/jobs because the
+classifieds general marketplace returns cars/appliances instead of
+professional listings when searching by keyword.
 """
 
 from __future__ import annotations
@@ -25,36 +30,23 @@ logger = logging.getLogger(__name__)
 # Search configuration
 # ---------------------------------------------------------------------------
 
-BASE_URL = "https://classifieds.ksl.com"
+BASE_URL = "https://www.ksl.com/jobs"
 
 SEARCH_KEYWORDS: list[str] = [
-    "life coach",
-    "business consultant",
+    "business coach",
     "executive coach",
-    "leadership coaching",
-    "business coaching",
-    "success coach",
-    "performance coach",
-    "mindset coach",
-    "health coach",
-    "wellness coach",
-    "fitness coach",
-    "sales trainer",
+    "sales coach",
+    "leadership coach",
+    "business consultant",
     "management consultant",
-    "startup advisor",
-    "small business consultant",
-    "personal development",
-]
-
-CATEGORY_SLUGS: list[str] = [
-    "Services",
-    "Business-Opportunities",
-    "Career-Services",
+    "strategy consultant",
+    "sales trainer",
+    "business advisor",
 ]
 
 
 class KSLCoachingConsultingAgent(BaseAgent):
-    """Scrape KSL Classifieds for coaches and consultants in Utah.
+    """Scrape KSL Jobs for coaches and consultants in Utah.
 
     These listings reveal people who are:
     - Skilled communicators and relationship builders
@@ -78,23 +70,19 @@ class KSLCoachingConsultingAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     def get_search_urls(self) -> list[str]:
-        """Build search URLs targeting coaches and consultants."""
+        """Build search URLs targeting coaches and consultants on KSL Jobs.
+
+        Uses the KSL Jobs search endpoint:
+            https://www.ksl.com/jobs/search?keyword=...&location=Utah
+        """
         urls: list[str] = []
 
         for keyword in SEARCH_KEYWORDS:
-            for category in CATEGORY_SLUGS:
-                params = {
-                    "keyword": keyword,
-                    "category": category,
-                    "state": "Utah",
-                    "sort": "newest",
-                }
-                url = f"{BASE_URL}/search/?{urlencode(params, quote_via=quote_plus)}"
-                urls.append(url)
-
-        for category in CATEGORY_SLUGS:
-            params = {"category": category, "state": "Utah", "sort": "newest"}
-            url = f"{BASE_URL}/search/?{urlencode(params, quote_via=quote_plus)}"
+            params = {
+                "keyword": keyword,
+                "location": "Utah",
+            }
+            url = f"{BASE_URL}/search?{urlencode(params, quote_via=quote_plus)}"
             urls.append(url)
 
         logger.info("[%s] Generated %d search URLs", self.name, len(urls))
@@ -105,9 +93,9 @@ class KSLCoachingConsultingAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     async def scrape(self) -> list[dict]:
-        """Scrape KSL for coaching and consulting listings.
+        """Scrape KSL Jobs for coaching and consulting listings.
 
-        Uses httpx to fetch KSL pages and extracts listing data from
+        Uses httpx to fetch KSL Jobs pages and extracts listing data from
         the embedded Next.js RSC payload (no browser rendering needed).
         """
         all_items: list[dict] = []
