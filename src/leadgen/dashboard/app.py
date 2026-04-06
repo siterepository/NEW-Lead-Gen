@@ -7,14 +7,16 @@ Reads from the SQLite database at data/leadgen.db.
 Run with:  python3 -m leadgen.dashboard.app
 """
 
+import asyncio
 import csv
 import io
 import json
+import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from flask import Flask, Response, render_template_string, request
+from flask import Flask, Response, jsonify, render_template_string, request
 
 # ---------------------------------------------------------------------------
 # App setup
@@ -73,22 +75,95 @@ def time_ago(dt_str):
         return "Unknown"
 
 
+def _esc(text):
+    """HTML-escape a string."""
+    if not text:
+        return ""
+    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+
 # ---------------------------------------------------------------------------
-# Layout wrapper -- builds a complete page from content_html
+# Scoring dimension explanations - maps keywords to readable reasons
 # ---------------------------------------------------------------------------
 
-def _render_page(title, subtitle, active_page, content_html):
-    """Wrap page content in the shared layout shell."""
-    now_str = datetime.now().strftime("%b %d, %H:%M")
-    return render_template_string(
-        FULL_PAGE_TEMPLATE,
-        title=title,
-        subtitle=subtitle,
-        active_page=active_page,
-        last_updated=now_str,
-        content_html=content_html,
-    )
+CAREER_FIT_CATEGORIES = {
+    "sales": (["sales", "business development", "account executive", "account manager", "sales manager", "sales rep", "bdr", "sdr", "closer", "revenue", "quota", "outside sales", "inside sales"], 10, "Sales background"),
+    "entrepreneurial": (["entrepreneur", "founder", "co-founder", "owner", "self-employed", "freelancer", "freelance", "startup", "business owner", "consultant", "solopreneur"], 8, "Entrepreneurial experience"),
+    "real_estate": (["real estate agent", "real estate broker", "realtor", "real estate", "realty", "property manager", "keller williams", "coldwell banker"], 7, "Real estate background"),
+    "insurance": (["insurance agent", "insurance broker", "insurance", "underwriter", "state farm", "allstate", "life insurance"], 7, "Insurance industry"),
+    "military": (["veteran", "military", "army", "navy", "air force", "marine", "coast guard", "national guard", "transitioning military"], 7, "Military veteran"),
+    "teaching": (["teacher", "professor", "instructor", "educator", "coach", "coaching", "mentor", "mentoring"], 6, "Education/coaching"),
+    "leadership": (["manager", "director", "vp", "vice president", "team lead", "supervisor", "executive", "general manager"], 5, "Leadership role"),
+    "athletics": (["athlete", "athletics", "collegiate athlete", "competitive", "varsity", "captain", "personal trainer"], 4, "Athletic background"),
+    "customer_facing": (["retail manager", "hospitality", "restaurant manager", "customer service", "customer success", "bartender", "store manager"], 3, "Customer-facing"),
+}
 
+MOTIVATION_GROUPS = {
+    "job_seeking": (["looking for work", "open to opportunities", "job search", "seeking employment", "available immediately", "open to work", "actively looking", "#opentowork", "job hunting", "between jobs"], 10, "Actively seeking work"),
+    "career_change": (["career change", "career pivot", "career transition", "new chapter", "fresh start", "reinvent myself", "switching careers", "new direction"], 8, "Career change signals"),
+    "unemployed": (["laid off", "layoff", "downsized", "restructured", "recently unemployed"], 7, "Recently unemployed/laid off"),
+    "dissatisfied": (["burned out", "burnout", "need a change", "underpaid", "undervalued", "toxic workplace", "hate my job", "dead end", "frustrated", "overworked"], 6, "Job dissatisfaction"),
+    "entrepreneurial_aspiration": (["passive income", "financial freedom", "be my own boss", "side hustle", "wealth building", "residual income", "time freedom"], 5, "Entrepreneurial aspiration"),
+    "returning": (["returning to work", "back to work", "re-entering workforce", "career comeback", "stay at home"], 5, "Returning to workforce"),
+}
+
+PEOPLE_SKILLS_GROUPS = {
+    "networker": (["networking", "networker", "connector", "community builder", "relationship builder", "500+ connections"], 6, "Active networker"),
+    "volunteer": (["volunteer", "community service", "nonprofit", "charity", "board member", "rotary"], 5, "Community involvement"),
+    "coaching": (["coach", "coaching", "mentor", "mentoring", "life coach"], 5, "Coaching/mentoring"),
+    "speaking": (["public speaking", "speaker", "keynote", "toastmasters", "presenter"], 4, "Public speaking"),
+    "social_media": (["influencer", "content creator", "blogger", "podcast", "thought leader"], 3, "Social media presence"),
+    "team_lead": (["team leader", "led a team", "managed a team", "built a team", "team captain", "leadership"], 3, "Team leadership"),
+}
+
+
+def _explain_score(text):
+    """Generate human-readable explanations for each scoring dimension."""
+    if not text:
+        return {"career_fit": [], "motivation": [], "people_skills": [], "demographics": [], "data_quality": []}
+    text_lower = text.lower()
+    explanations = {"career_fit": [], "motivation": [], "people_skills": [], "demographics": [], "data_quality": []}
+
+    for cat, (keywords, pts, label) in CAREER_FIT_CATEGORIES.items():
+        for kw in keywords:
+            if kw in text_lower:
+                explanations["career_fit"].append(f"{label} (+{pts}): matched '{kw}'")
+                break
+
+    for grp, (keywords, pts, label) in MOTIVATION_GROUPS.items():
+        for kw in keywords:
+            if kw in text_lower:
+                explanations["motivation"].append(f"{label} (+{pts}): matched '{kw}'")
+                break
+
+    for grp, (keywords, pts, label) in PEOPLE_SKILLS_GROUPS.items():
+        for kw in keywords:
+            if kw in text_lower:
+                explanations["people_skills"].append(f"{label} (+{pts}): matched '{kw}'")
+                break
+
+    # Demographics
+    for kw in ["utah", "ut"]:
+        if kw in text_lower:
+            explanations["demographics"].append("Utah resident (+3)")
+            break
+    for kw in ["bachelor", "master", "mba", "phd", "degree", "university", "college"]:
+        if kw in text_lower:
+            explanations["demographics"].append(f"College educated (+2): matched '{kw}'")
+            break
+
+    # Data quality hints
+    if "@" in text_lower:
+        explanations["data_quality"].append("Email available (+3)")
+    if "linkedin.com" in text_lower:
+        explanations["data_quality"].append("LinkedIn URL available (+2)")
+
+    return explanations
+
+
+# ---------------------------------------------------------------------------
+# Layout wrapper
+# ---------------------------------------------------------------------------
 
 FULL_PAGE_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="en" class="dark">
@@ -127,12 +202,19 @@ body { font-family: 'Inter', sans-serif; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 .pulse-dot { animation: pulse 2s infinite; }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+.chip { cursor: pointer; user-select: none; transition: all 0.15s; }
+.chip:hover { opacity: 0.85; }
+.chip.active { ring: 2px; box-shadow: 0 0 0 2px rgba(59,130,246,0.5); }
+.score-bar { transition: width 0.6s ease; }
+.modal-backdrop { background: rgba(0,0,0,0.6); backdrop-filter: blur(4px); }
+.enhance-spin { animation: spin 1s linear infinite; }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 </style>
 </head>
 <body class="bg-slate-950 text-slate-200 min-h-screen">
 <div class="flex min-h-screen">
 <!-- Sidebar -->
-<aside class="w-64 bg-slate-900 border-r border-slate-800 fixed h-full z-10 flex flex-col">
+<aside class="w-64 bg-slate-900 border-r border-slate-800 fixed h-full z-20 flex flex-col">
     <div class="p-5 border-b border-slate-800">
         <div class="flex items-center space-x-3">
             <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center">
@@ -188,8 +270,188 @@ body { font-family: 'Inter', sans-serif; }
     </div>
 </main>
 </div>
+
+<!-- Enhance Modal (global, used on leads page) -->
+<div id="enhanceModal" class="fixed inset-0 z-50 hidden">
+    <div class="modal-backdrop absolute inset-0" onclick="closeEnhanceModal()"></div>
+    <div class="relative z-10 max-w-2xl mx-auto mt-20 bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl overflow-hidden">
+        <div class="flex items-center justify-between px-6 py-4 border-b border-slate-800">
+            <h3 class="text-lg font-semibold text-white" id="enhanceModalTitle">Enhance Lead</h3>
+            <button onclick="closeEnhanceModal()" class="text-slate-400 hover:text-white transition-colors">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+        </div>
+        <div class="p-6">
+            <div id="enhanceCurrentData" class="mb-4"></div>
+            <button id="enhanceNowBtn" onclick="runEnhance()" class="w-full bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white font-bold py-3 px-6 rounded-xl transition-all text-lg mb-4">
+                ENHANCE NOW
+            </button>
+            <div id="enhanceResults" class="hidden">
+                <h4 class="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-3">Search Results</h4>
+                <div id="enhanceResultsList" class="space-y-3 max-h-80 overflow-y-auto"></div>
+                <button id="enhanceSaveBtn" onclick="saveEnhanceData()" class="mt-4 w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-2.5 px-4 rounded-lg transition-colors hidden">
+                    Save Found Data to Lead
+                </button>
+            </div>
+            <div id="enhanceLoading" class="hidden text-center py-8">
+                <svg class="w-8 h-8 text-blue-400 mx-auto enhance-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                <p class="text-sm text-slate-400 mt-3">Searching across multiple providers...</p>
+            </div>
+            <div id="enhanceError" class="hidden bg-red-500/10 border border-red-500/30 rounded-lg p-4 mt-4">
+                <p class="text-sm text-red-400" id="enhanceErrorMsg"></p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// ---- Enhance Modal Logic ----
+let currentEnhanceLeadId = null;
+let enhanceFoundData = {};
+
+function openEnhanceModal(leadId, leadName, leadData) {
+    currentEnhanceLeadId = leadId;
+    enhanceFoundData = {};
+    document.getElementById('enhanceModalTitle').textContent = 'Enhance: ' + leadName;
+    document.getElementById('enhanceResults').classList.add('hidden');
+    document.getElementById('enhanceLoading').classList.add('hidden');
+    document.getElementById('enhanceError').classList.add('hidden');
+    document.getElementById('enhanceSaveBtn').classList.add('hidden');
+    document.getElementById('enhanceNowBtn').disabled = false;
+    document.getElementById('enhanceNowBtn').textContent = 'ENHANCE NOW';
+
+    let html = '<div class="grid grid-cols-2 gap-3">';
+    if (leadData.name) html += '<div class="bg-slate-800/50 rounded-lg p-3"><p class="text-xs text-slate-500">Name</p><p class="text-sm text-slate-200">' + leadData.name + '</p></div>';
+    if (leadData.platform) html += '<div class="bg-slate-800/50 rounded-lg p-3"><p class="text-xs text-slate-500">Platform</p><p class="text-sm text-slate-200">' + leadData.platform + '</p></div>';
+    if (leadData.city) html += '<div class="bg-slate-800/50 rounded-lg p-3"><p class="text-xs text-slate-500">Location</p><p class="text-sm text-slate-200">' + leadData.city + '</p></div>';
+    if (leadData.score) html += '<div class="bg-slate-800/50 rounded-lg p-3"><p class="text-xs text-slate-500">Score</p><p class="text-sm text-slate-200">' + leadData.score + '/140</p></div>';
+    html += '</div>';
+    document.getElementById('enhanceCurrentData').innerHTML = html;
+
+    document.getElementById('enhanceModal').classList.remove('hidden');
+}
+
+function closeEnhanceModal() {
+    document.getElementById('enhanceModal').classList.add('hidden');
+    currentEnhanceLeadId = null;
+}
+
+async function runEnhance() {
+    if (!currentEnhanceLeadId) return;
+    document.getElementById('enhanceNowBtn').disabled = true;
+    document.getElementById('enhanceNowBtn').textContent = 'Searching...';
+    document.getElementById('enhanceLoading').classList.remove('hidden');
+    document.getElementById('enhanceResults').classList.add('hidden');
+    document.getElementById('enhanceError').classList.add('hidden');
+
+    try {
+        const resp = await fetch('/api/enhance/' + currentEnhanceLeadId, { method: 'POST' });
+        const data = await resp.json();
+        document.getElementById('enhanceLoading').classList.add('hidden');
+
+        if (data.error) {
+            document.getElementById('enhanceError').classList.remove('hidden');
+            document.getElementById('enhanceErrorMsg').textContent = data.error;
+            document.getElementById('enhanceNowBtn').disabled = false;
+            document.getElementById('enhanceNowBtn').textContent = 'RETRY ENHANCE';
+            return;
+        }
+
+        enhanceFoundData = data.found_data || {};
+        let resultsHtml = '';
+        const searches = data.searches || [];
+        searches.forEach(function(search) {
+            resultsHtml += '<div class="bg-slate-800/50 rounded-lg p-3 mb-2">';
+            resultsHtml += '<p class="text-xs text-slate-500 mb-2">' + (search.query || 'Search') + '</p>';
+            (search.results || []).forEach(function(r) {
+                resultsHtml += '<a href="' + r.url + '" target="_blank" rel="noopener" class="block hover:bg-slate-700/50 rounded p-2 mb-1 transition-colors">';
+                resultsHtml += '<p class="text-sm text-blue-400 font-medium">' + r.title + '</p>';
+                resultsHtml += '<p class="text-xs text-slate-500 truncate">' + r.url + '</p>';
+                if (r.snippet) resultsHtml += '<p class="text-xs text-slate-400 mt-1">' + r.snippet.substring(0, 200) + '</p>';
+                resultsHtml += '</a>';
+            });
+            if (!search.results || search.results.length === 0) {
+                resultsHtml += '<p class="text-xs text-slate-500 italic">No results found</p>';
+            }
+            resultsHtml += '</div>';
+        });
+
+        document.getElementById('enhanceResultsList').innerHTML = resultsHtml;
+        document.getElementById('enhanceResults').classList.remove('hidden');
+        document.getElementById('enhanceNowBtn').textContent = 'ENHANCE COMPLETE';
+
+        if (enhanceFoundData.linkedin_url || enhanceFoundData.email || enhanceFoundData.phone) {
+            document.getElementById('enhanceSaveBtn').classList.remove('hidden');
+        }
+    } catch (e) {
+        document.getElementById('enhanceLoading').classList.add('hidden');
+        document.getElementById('enhanceError').classList.remove('hidden');
+        document.getElementById('enhanceErrorMsg').textContent = 'Network error: ' + e.message;
+        document.getElementById('enhanceNowBtn').disabled = false;
+        document.getElementById('enhanceNowBtn').textContent = 'RETRY ENHANCE';
+    }
+}
+
+async function saveEnhanceData() {
+    if (!currentEnhanceLeadId || !enhanceFoundData) return;
+    try {
+        const resp = await fetch('/api/enhance/' + currentEnhanceLeadId + '/save', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(enhanceFoundData)
+        });
+        const data = await resp.json();
+        if (data.success) {
+            document.getElementById('enhanceSaveBtn').textContent = 'Saved!';
+            document.getElementById('enhanceSaveBtn').disabled = true;
+            document.getElementById('enhanceSaveBtn').classList.remove('bg-green-600', 'hover:bg-green-700');
+            document.getElementById('enhanceSaveBtn').classList.add('bg-slate-600');
+            setTimeout(function() { location.reload(); }, 1000);
+        }
+    } catch (e) {
+        alert('Failed to save: ' + e.message);
+    }
+}
+</script>
 </body>
 </html>"""
+
+
+def _render_page(title, subtitle, active_page, content_html):
+    """Wrap page content in the shared layout shell."""
+    now_str = datetime.now().strftime("%b %d, %H:%M")
+    return render_template_string(
+        FULL_PAGE_TEMPLATE,
+        title=title,
+        subtitle=subtitle,
+        active_page=active_page,
+        last_updated=now_str,
+        content_html=content_html,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Platform icons/badges
+# ---------------------------------------------------------------------------
+
+PLATFORM_ICONS = {
+    "linkedin": ('<svg class="w-4 h-4 inline" viewBox="0 0 24 24" fill="#0A66C2"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.064 2.064 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>', 'bg-blue-500/20 text-blue-400 border-blue-500/40'),
+    "craigslist": ('<svg class="w-4 h-4 inline" viewBox="0 0 24 24" fill="#8b5cf6"><path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm0 3a9 9 0 110 18 9 9 0 010-18zm-1 4v4H7v2h4v4h2v-4h4v-2h-4V7h-2z"/></svg>', 'bg-purple-500/20 text-purple-400 border-purple-500/40'),
+    "reddit": ('<svg class="w-4 h-4 inline" viewBox="0 0 24 24" fill="#FF4500"><path d="M12 0A12 12 0 000 12a12 12 0 0012 12 12 12 0 0012-12A12 12 0 0012 0zm5.01 4.744c.688 0 1.25.561 1.25 1.249a1.25 1.25 0 01-2.498.056l-2.597-.547-.8 3.747c1.824.07 3.48.632 4.674 1.488.308-.309.73-.491 1.207-.491.968 0 1.754.786 1.754 1.754 0 .716-.435 1.333-1.01 1.614a3.111 3.111 0 01.042.52c0 2.694-3.13 4.87-7.004 4.87-3.874 0-7.004-2.176-7.004-4.87 0-.183.015-.366.043-.534A1.748 1.748 0 014.028 12c0-.968.786-1.754 1.754-1.754.463 0 .898.196 1.207.49 1.207-.883 2.878-1.43 4.744-1.487l.885-4.182a.342.342 0 01.14-.197.35.35 0 01.238-.042l2.906.617a1.214 1.214 0 011.108-.701zM9.25 12C8.561 12 8 12.562 8 13.25c0 .687.561 1.248 1.25 1.248.687 0 1.248-.561 1.248-1.249 0-.688-.561-1.249-1.249-1.249zm5.5 0c-.687 0-1.248.561-1.248 1.25 0 .687.561 1.248 1.249 1.248.688 0 1.249-.561 1.249-1.249 0-.687-.562-1.249-1.25-1.249zm-5.466 3.99a.327.327 0 00-.231.094.33.33 0 000 .463c.842.842 2.484.913 2.961.913.477 0 2.105-.056 2.961-.913a.361.361 0 000-.462.342.342 0 00-.465 0c-.533.533-1.684.73-2.512.73-.828 0-1.979-.196-2.512-.73a.326.326 0 00-.232-.095z"/></svg>', 'bg-orange-500/20 text-orange-400 border-orange-500/40'),
+    "search": ('<svg class="w-4 h-4 inline" fill="none" stroke="#22c55e" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>', 'bg-green-500/20 text-green-400 border-green-500/40'),
+    "ksl": ('<svg class="w-4 h-4 inline" viewBox="0 0 24 24" fill="#f59e0b"><rect width="24" height="24" rx="4"/><text x="4" y="17" font-size="12" font-weight="bold" fill="#0f172a">KSL</text></svg>', 'bg-amber-500/20 text-amber-400 border-amber-500/40'),
+    "facebook": ('<svg class="w-4 h-4 inline" viewBox="0 0 24 24" fill="#1877F2"><path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/></svg>', 'bg-blue-600/20 text-blue-400 border-blue-500/40'),
+}
+
+
+def _platform_badge(platform):
+    """Return HTML for a platform icon badge."""
+    p = (platform or "unknown").lower()
+    icon, classes = PLATFORM_ICONS.get(p, (
+        '<svg class="w-4 h-4 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945"/></svg>',
+        'bg-slate-500/20 text-slate-400 border-slate-500/40'
+    ))
+    return f'<span class="inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-full text-xs font-medium border {classes}">{icon}<span>{_esc(platform).title()}</span></span>'
 
 
 # ---------------------------------------------------------------------------
@@ -217,6 +479,16 @@ def _parse_lead(row):
     else:
         tier = "D"
 
+    # Build combined text for score explanation
+    combined_text = " ".join(filter(None, [
+        data.get("title", ""), data.get("description", ""),
+        data.get("source_post_text", ""), data.get("current_role", ""),
+        data.get("contact_email", ""), data.get("linkedin_url", ""),
+        data.get("location_state", ""), data.get("education", ""),
+        " ".join(data.get("recruiting_signals", [])),
+        " ".join(data.get("career_history", [])),
+    ]))
+
     return {
         "id": row["id"],
         "name": name,
@@ -228,6 +500,7 @@ def _parse_lead(row):
         "state": data.get("location_state", ""),
         "category": data.get("category", ""),
         "scraped_at": fmt_dt(p.get("scraped_at", row["created_at"])),
+        "scraped_at_raw": p.get("scraped_at", row["created_at"]),
         "source_url": data.get("source_url", data.get("url", "")),
         "post_id": data.get("post_id", ""),
         "description": data.get("description", ""),
@@ -244,10 +517,19 @@ def _parse_lead(row):
         "score_people_skills": data.get("score_people_skills", 0),
         "score_demographics": data.get("score_demographics", 0),
         "score_data_quality": data.get("score_data_quality", 0),
+        "score_nwm_connection": data.get("score_nwm_connection", 0),
+        "has_nwm_mutual_connection": data.get("has_nwm_mutual_connection", False),
+        "nwm_mutual_names": data.get("nwm_mutual_names", []),
         "sentiment_score": data.get("sentiment_score"),
         "enriched": data.get("enriched", False),
+        "enhanced": data.get("enhanced", False),
         "compliance_cleared": data.get("compliance_cleared", False),
         "source_post_text": data.get("source_post_text", data.get("description", "")),
+        "relevance_reason": data.get("_relevance_reason", ""),
+        "relevance_score": data.get("_relevance_score", 0),
+        "linkedin_url": data.get("linkedin_url", ""),
+        "education": data.get("education", ""),
+        "score_explanations": _explain_score(combined_text),
     }
 
 
@@ -278,6 +560,9 @@ def dashboard():
         tier_a = tier_b = tier_c = tier_d = 0
         platform_map = {}
         daily_map = {}
+        enhanced_count = 0
+        not_enhanced_a_tier = 0
+        nwm_connected = 0
 
         for row in all_payloads:
             p = safe_json(row[0])
@@ -294,14 +579,28 @@ def dashboard():
 
             data = p.get("data", {})
             score = data.get("total_score", 0)
+            is_enhanced = data.get("enhanced", False)
+            has_nwm = data.get("has_nwm_mutual_connection", False)
+
+            if is_enhanced:
+                enhanced_count += 1
+            if has_nwm:
+                nwm_connected += 1
+
             if score >= 75:
                 tier_a += 1
+                if not is_enhanced:
+                    not_enhanced_a_tier += 1
             elif score >= 50:
                 tier_b += 1
             elif score >= 25:
                 tier_c += 1
             else:
                 tier_d += 1
+
+        ab_tier = tier_a + tier_b
+        quality_pct = int(ab_tier / total_leads * 100) if total_leads > 0 else 0
+        pending_enhance = not_enhanced_a_tier
 
         active_agents = db.execute(
             "SELECT COUNT(DISTINCT json_extract(payload, '$.agent')) FROM jobs WHERE job_type='raw_scrape'"
@@ -327,19 +626,34 @@ def dashboard():
                 "items_new": p.get("items_new", 0),
                 "time_ago": time_ago(p.get("completed_at", row[1])),
             })
-        ar_rows = db.execute(
-            "SELECT * FROM agent_runs ORDER BY completed_at DESC LIMIT 20"
-        ).fetchall()
-        for row in ar_rows:
-            recent_runs.append({
-                "agent_name": row["agent_name"],
-                "platform": row["platform"] or "?",
-                "status": row["status"],
-                "items_found": row["items_found"],
-                "items_new": row["items_new"],
-                "time_ago": time_ago(row["completed_at"]),
-            })
+        try:
+            ar_rows = db.execute(
+                "SELECT * FROM agent_runs ORDER BY completed_at DESC LIMIT 20"
+            ).fetchall()
+            for row in ar_rows:
+                recent_runs.append({
+                    "agent_name": row["agent_name"],
+                    "platform": row["platform"] or "?",
+                    "status": row["status"],
+                    "items_found": row["items_found"],
+                    "items_new": row["items_new"],
+                    "time_ago": time_ago(row["completed_at"]),
+                })
+        except Exception:
+            pass
         recent_runs = recent_runs[:20]
+
+        # Top 5 newest A-tier leads for carousel
+        top_a_rows = db.execute(
+            "SELECT * FROM jobs WHERE job_type='raw_scrape' ORDER BY created_at DESC LIMIT 200"
+        ).fetchall()
+        top_a_leads = []
+        for row in top_a_rows:
+            lead = _parse_lead(row)
+            if lead["tier"] == "A":
+                top_a_leads.append(lead)
+            if len(top_a_leads) >= 5:
+                break
 
         now = datetime.now(timezone.utc)
         daily_labels = []
@@ -355,6 +669,14 @@ def dashboard():
         daily_labels_json = json.dumps(daily_labels)
         daily_counts_json = json.dumps(daily_counts)
 
+        # Quality gauge color
+        if quality_pct >= 50:
+            gauge_color = "text-green-400"
+        elif quality_pct >= 25:
+            gauge_color = "text-blue-400"
+        else:
+            gauge_color = "text-yellow-400"
+
         # Build activity feed HTML
         activity_html = ""
         for run in recent_runs:
@@ -368,8 +690,8 @@ def dashboard():
                 <div class="flex items-center space-x-3">
                     {dot}
                     <div>
-                        <p class="text-sm font-medium text-slate-200">{run["agent_name"]}</p>
-                        <p class="text-xs text-slate-500">{run["platform"]} &middot; {run["items_found"]} found, {run["items_new"]} new</p>
+                        <p class="text-sm font-medium text-slate-200">{_esc(run["agent_name"])}</p>
+                        <p class="text-xs text-slate-500">{_esc(run["platform"])} &middot; {run["items_found"]} found, {run["items_new"]} new</p>
                     </div>
                 </div>
                 <span class="text-xs text-slate-500">{run["time_ago"]}</span>
@@ -378,9 +700,51 @@ def dashboard():
         if not recent_runs:
             activity_html = '<p class="text-sm text-slate-500 text-center py-8">No agent runs recorded yet.</p>'
 
+        # Top A-tier carousel
+        carousel_html = ""
+        if top_a_leads:
+            for lead in top_a_leads:
+                reason = _esc(lead["relevance_reason"]) if lead["relevance_reason"] else "High scoring lead"
+                carousel_html += f'''<div class="min-w-[280px] bg-slate-800/50 border border-green-500/20 rounded-xl p-4 snap-start">
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold border bg-tier-a tier-a">A</span>
+                        {_platform_badge(lead["platform"])}
+                    </div>
+                    <p class="text-sm font-semibold text-white truncate">{_esc(lead["name"] or lead["title"] or "Unnamed")}</p>
+                    <p class="text-xs text-slate-400 mt-1 truncate">{_esc(lead["current_role"] or lead["title"])}</p>
+                    <p class="text-xs text-green-400/80 mt-2 line-clamp-2">{reason}</p>
+                    <div class="flex items-center justify-between mt-3">
+                        <span class="text-sm font-bold text-green-400">{lead["score"]}/140</span>
+                        <a href="/leads/{lead["id"]}" class="text-xs text-blue-400 hover:text-blue-300">View &rarr;</a>
+                    </div>
+                </div>'''
+        else:
+            carousel_html = '<p class="text-sm text-slate-500 py-4">No A-tier leads yet.</p>'
+
+        # Auto-enhance banner
+        enhance_banner = ""
+        if pending_enhance > 0:
+            enhance_banner = f'''
+            <div class="bg-gradient-to-r from-blue-900/40 to-purple-900/40 border border-blue-500/30 rounded-xl p-4 mb-8 flex items-center justify-between">
+                <div class="flex items-center space-x-3">
+                    <div class="w-10 h-10 rounded-lg bg-blue-500/20 flex items-center justify-center">
+                        <svg class="w-5 h-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                    </div>
+                    <div>
+                        <p class="text-sm font-semibold text-white">{pending_enhance} A-tier lead{"s" if pending_enhance != 1 else ""} not yet enhanced</p>
+                        <p class="text-xs text-slate-400">Run auto-enhance to find LinkedIn profiles, emails, and phone numbers</p>
+                    </div>
+                </div>
+                <button onclick="runAutoEnhance()" id="autoEnhanceBtn" class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold px-5 py-2.5 rounded-lg transition-colors flex items-center space-x-2">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                    <span>Auto-Enhance A-Tier</span>
+                </button>
+            </div>'''
+
         content = f'''
+{enhance_banner}
 <!-- Stat Cards -->
-<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4 mb-8">
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8 gap-4 mb-8">
     <div class="stat-card bg-slate-900 border border-slate-800 rounded-xl p-5 card-glow">
         <div class="flex items-center justify-between mb-3">
             <span class="text-xs font-medium text-slate-400 uppercase tracking-wider">Total Leads</span>
@@ -419,24 +783,50 @@ def dashboard():
     </div>
     <div class="stat-card bg-slate-900 border border-slate-800 rounded-xl p-5 card-glow">
         <div class="flex items-center justify-between mb-3">
-            <span class="text-xs font-medium text-slate-400 uppercase tracking-wider">Active Agents</span>
-            <div class="w-8 h-8 rounded-lg bg-purple-500/20 flex items-center justify-center">
-                <svg class="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+            <span class="text-xs font-medium text-slate-400 uppercase tracking-wider">Lead Quality</span>
+            <div class="w-8 h-8 rounded-lg bg-cyan-500/20 flex items-center justify-center">
+                <svg class="w-4 h-4 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
             </div>
         </div>
-        <p class="text-3xl font-bold text-white">{active_agents}</p>
-        <p class="text-xs text-slate-500 mt-1">Unique scrapers</p>
+        <p class="text-3xl font-bold {gauge_color}">{quality_pct}%</p>
+        <p class="text-xs text-slate-500 mt-1">A+B tier rate</p>
     </div>
     <div class="stat-card bg-slate-900 border border-slate-800 rounded-xl p-5 card-glow">
         <div class="flex items-center justify-between mb-3">
-            <span class="text-xs font-medium text-slate-400 uppercase tracking-wider">Last Scrape</span>
-            <div class="w-8 h-8 rounded-lg bg-amber-500/20 flex items-center justify-center">
-                <svg class="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            <span class="text-xs font-medium text-slate-400 uppercase tracking-wider">Enhanced</span>
+            <div class="w-8 h-8 rounded-lg bg-purple-500/20 flex items-center justify-center">
+                <svg class="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
             </div>
         </div>
-        <p class="text-xl font-bold text-white">{last_scrape}</p>
-        <p class="text-xs text-slate-500 mt-1">Most recent run</p>
+        <p class="text-3xl font-bold text-purple-400">{enhanced_count}</p>
+        <p class="text-xs text-slate-500 mt-1">{pending_enhance} pending</p>
     </div>
+    <div class="stat-card bg-slate-900 border border-slate-800 rounded-xl p-5 card-glow">
+        <div class="flex items-center justify-between mb-3">
+            <span class="text-xs font-medium text-slate-400 uppercase tracking-wider">NWM Connected</span>
+            <div class="w-8 h-8 rounded-lg bg-amber-500/20 flex items-center justify-center">
+                <svg class="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101"/></svg>
+            </div>
+        </div>
+        <p class="text-3xl font-bold text-amber-400">{nwm_connected}</p>
+        <p class="text-xs text-slate-500 mt-1">+40 boost leads</p>
+    </div>
+    <div class="stat-card bg-slate-900 border border-slate-800 rounded-xl p-5 card-glow">
+        <div class="flex items-center justify-between mb-3">
+            <span class="text-xs font-medium text-slate-400 uppercase tracking-wider">Active Agents</span>
+            <div class="w-8 h-8 rounded-lg bg-pink-500/20 flex items-center justify-center">
+                <svg class="w-4 h-4 text-pink-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+            </div>
+        </div>
+        <p class="text-3xl font-bold text-white">{active_agents}</p>
+        <p class="text-xs text-slate-500 mt-1">Last: {last_scrape}</p>
+    </div>
+</div>
+
+<!-- Top A-Tier Carousel -->
+<div class="bg-slate-900 border border-slate-800 rounded-xl p-6 card-glow mb-8">
+    <h3 class="text-sm font-semibold text-slate-300 mb-4 uppercase tracking-wider">Newest A-Tier Leads</h3>
+    <div class="flex space-x-4 overflow-x-auto pb-2 snap-x snap-mandatory">{carousel_html}</div>
 </div>
 
 <!-- Charts Row -->
@@ -480,6 +870,21 @@ new Chart(document.getElementById('tierBarChart'),{{
     data:{{ labels:['A-Tier','B-Tier','C-Tier','D-Tier'], datasets:[{{ label:'Leads',data:{tier_counts_json},backgroundColor:['rgba(34,197,94,0.7)','rgba(59,130,246,0.7)','rgba(234,179,8,0.7)','rgba(239,68,68,0.7)'],borderColor:['#22c55e','#3b82f6','#eab308','#ef4444'],borderWidth:1,borderRadius:6 }}] }},
     options:{{ responsive:true,maintainAspectRatio:false,plugins:{{ legend:{{ display:false }} }},scales:{{ x:{{ grid:{{ display:false }} }},y:{{ beginAtZero:true,grid:{{ color:'rgba(51,65,85,0.3)' }} }} }} }}
 }});
+
+async function runAutoEnhance() {{
+    const btn = document.getElementById('autoEnhanceBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<svg class="w-4 h-4 enhance-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg><span>Enhancing...</span>';
+    try {{
+        const resp = await fetch('/api/auto-enhance', {{ method: 'POST' }});
+        const data = await resp.json();
+        btn.innerHTML = '<span>Done! ' + (data.enhanced_count || 0) + ' enhanced</span>';
+        setTimeout(function() {{ location.reload(); }}, 2000);
+    }} catch (e) {{
+        btn.innerHTML = '<span>Error: ' + e.message + '</span>';
+        btn.disabled = false;
+    }}
+}}
 </script>'''
 
         return _render_page("Dashboard", "Overview of your lead generation pipeline", "dashboard", content)
@@ -495,34 +900,18 @@ new Chart(document.getElementById('tierBarChart'),{{
 def leads_list():
     db = get_db()
     try:
-        search = request.args.get("search", "").strip()
-        tier_filter = request.args.get("tier", "").strip()
-        platform_filter = request.args.get("platform", "").strip()
         page = int(request.args.get("page", 1))
-        per_page = 50
+        per_page = 25
 
         platform_rows = db.execute(
             "SELECT DISTINCT json_extract(payload, '$.platform') as p FROM jobs WHERE job_type='raw_scrape' AND p IS NOT NULL"
         ).fetchall()
         platforms = sorted(set(r[0] for r in platform_rows if r[0]))
 
-        query = "SELECT * FROM jobs WHERE job_type='raw_scrape'"
-        params = []
-        if platform_filter:
-            query += " AND json_extract(payload, '$.platform')=?"
-            params.append(platform_filter)
-        if search:
-            query += " AND payload LIKE ?"
-            params.append(f"%{search}%")
-        query += " ORDER BY created_at DESC"
-
-        all_rows = db.execute(query, params).fetchall()
-        all_leads = []
-        for row in all_rows:
-            lead = _parse_lead(row)
-            if tier_filter and lead["tier"] != tier_filter:
-                continue
-            all_leads.append(lead)
+        all_rows = db.execute(
+            "SELECT * FROM jobs WHERE job_type='raw_scrape' ORDER BY created_at DESC"
+        ).fetchall()
+        all_leads = [_parse_lead(row) for row in all_rows]
 
         total_count = len(all_leads)
         total_pages = max(1, (total_count + per_page - 1) // per_page)
@@ -530,101 +919,362 @@ def leads_list():
         start = (page - 1) * per_page
         leads = all_leads[start:start + per_page]
 
-        # Build platform options HTML
-        plat_options = '<option value="">All Platforms</option>'
+        # Build platform filter chips
+        plat_chips = ""
         for p in platforms:
-            sel = "selected" if platform_filter == p else ""
-            plat_options += f'<option value="{p}" {sel}>{p.title()}</option>'
+            plat_chips += f'<button type="button" data-filter-platform="{_esc(p)}" class="chip inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-full text-xs font-medium border border-slate-600 bg-slate-800 text-slate-300 hover:bg-slate-700">{_platform_badge(p)}</button>'
 
-        tier_options = '<option value="">All Tiers</option>'
-        for t in ["A", "B", "C", "D"]:
-            sel = "selected" if tier_filter == t else ""
-            tier_options += f'<option value="{t}" {sel}>{t}-Tier</option>'
-
-        # Build table rows HTML
-        rows_html = ""
-        for l in leads:
-            display_name = l["name"] or l["title"] or "Unnamed"
-            subtitle_html = ""
-            if l["name"] and l["title"]:
-                safe_title = l["title"].replace("<", "&lt;").replace(">", "&gt;")
-                subtitle_html = f'<p class="text-xs text-slate-500 truncate max-w-xs">{safe_title}</p>'
-
-            safe_display = display_name.replace("<", "&lt;").replace(">", "&gt;")
-
-            tier_class = {"A": "bg-tier-a tier-a", "B": "bg-tier-b tier-b", "C": "bg-tier-c tier-c", "D": "bg-tier-d tier-d"}.get(l["tier"], "bg-tier-d tier-d")
-
-            rows_html += f'''<tr class="hover:bg-slate-800/30 transition-colors">
-                <td class="px-6 py-3"><div><p class="text-sm font-medium text-slate-200">{safe_display}</p>{subtitle_html}</div></td>
-                <td class="px-4 py-3"><span class="text-sm font-mono font-medium text-slate-300">{l["score"]}</span></td>
-                <td class="px-4 py-3"><span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold border {tier_class}">{l["tier"]}</span></td>
-                <td class="px-4 py-3"><span class="text-sm text-slate-400">{l["platform"].title()}</span></td>
-                <td class="px-4 py-3"><span class="text-sm text-slate-400">{l["city"] or "-"}</span></td>
-                <td class="px-4 py-3"><span class="text-sm text-slate-400">{l["category"] or "-"}</span></td>
-                <td class="px-4 py-3"><span class="text-xs text-slate-500">{l["scraped_at"]}</span></td>
-                <td class="px-4 py-3"><a href="/leads/{l["id"]}" class="text-blue-400 hover:text-blue-300 text-sm font-medium transition-colors">View</a></td>
-            </tr>'''
-
-        if not leads:
-            rows_html = '<tr><td colspan="8" class="px-6 py-12 text-center text-slate-500">No leads found matching your criteria.</td></tr>'
-
-        # Pagination HTML
-        pag_html = ""
-        if total_pages > 1:
-            pag_html = '<div class="flex items-center justify-center space-x-2 mt-6">'
-            if page > 1:
-                pag_html += f'<a href="/leads?page={page-1}&search={search}&tier={tier_filter}&platform={platform_filter}" class="bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm px-3 py-1.5 rounded-lg transition-colors">Previous</a>'
-            for p in range(1, total_pages + 1):
-                if p == page:
-                    pag_html += f'<span class="bg-blue-600 text-white text-sm px-3 py-1.5 rounded-lg">{p}</span>'
-                elif p <= 3 or p > total_pages - 3 or (page - 1 <= p <= page + 1):
-                    pag_html += f'<a href="/leads?page={p}&search={search}&tier={tier_filter}&platform={platform_filter}" class="bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm px-3 py-1.5 rounded-lg transition-colors">{p}</a>'
-                elif p == 4 or p == total_pages - 3:
-                    pag_html += '<span class="text-slate-500 text-sm">...</span>'
-            if page < total_pages:
-                pag_html += f'<a href="/leads?page={page+1}&search={search}&tier={tier_filter}&platform={platform_filter}" class="bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm px-3 py-1.5 rounded-lg transition-colors">Next</a>'
-            pag_html += '</div>'
+        # Build table rows HTML with all lead data as JSON for JS filtering
+        leads_json = json.dumps([{
+            "id": l["id"], "name": l["name"], "title": l["title"], "score": l["score"],
+            "tier": l["tier"], "platform": l["platform"], "city": l["city"],
+            "state": l["state"], "source_url": l["source_url"],
+            "relevance_reason": l["relevance_reason"], "scraped_at": l["scraped_at"],
+            "scraped_at_raw": l["scraped_at_raw"] or "",
+            "description": (l["description"] or "")[:200],
+            "current_role": l["current_role"], "has_nwm": l["has_nwm_mutual_connection"],
+            "enhanced": l["enhanced"], "contact_email": l["contact_email"],
+            "contact_phone": l["contact_phone"],
+            "score_career_fit": l["score_career_fit"], "score_motivation": l["score_motivation"],
+            "score_people_skills": l["score_people_skills"], "score_demographics": l["score_demographics"],
+            "score_data_quality": l["score_data_quality"], "score_nwm_connection": l["score_nwm_connection"],
+        } for l in all_leads], default=str)
 
         content = f'''
-<div class="bg-slate-900 border border-slate-800 rounded-xl p-4 mb-6 card-glow">
-    <form method="GET" action="/leads" class="flex flex-wrap items-center gap-4">
-        <div class="flex-1 min-w-[200px]">
-            <input type="text" name="search" value="{search}" placeholder="Search leads by name, title, city..."
-                   class="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+<!-- Search & Filter Bar -->
+<div class="bg-slate-900 border border-slate-800 rounded-xl p-5 mb-6 card-glow">
+    <div class="flex flex-col space-y-4">
+        <!-- Search -->
+        <div class="relative">
+            <svg class="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+            <input type="text" id="searchInput" placeholder="Search leads by name, title, city, URL, description..."
+                   class="w-full bg-slate-800 border border-slate-700 rounded-lg pl-10 pr-4 py-2.5 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
         </div>
-        <select name="tier" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500">{tier_options}</select>
-        <select name="platform" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500">{plat_options}</select>
-        <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">Filter</button>
-        <a href="/leads" class="text-sm text-slate-400 hover:text-slate-200 transition-colors">Clear</a>
-        <a href="/leads/export?search={search}&tier={tier_filter}&platform={platform_filter}"
-           class="ml-auto bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-medium px-4 py-2 rounded-lg transition-colors flex items-center space-x-2">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-            <span>Export CSV</span>
-        </a>
-    </form>
+
+        <!-- Filter chips row -->
+        <div class="flex flex-wrap items-center gap-3">
+            <!-- Tier filters -->
+            <span class="text-xs text-slate-500 font-medium uppercase">Tier:</span>
+            <button type="button" data-filter-tier="A" class="chip inline-flex items-center px-3 py-1.5 rounded-full text-xs font-bold border border-green-500/40 bg-green-500/10 text-green-400 hover:bg-green-500/20">A</button>
+            <button type="button" data-filter-tier="B" class="chip inline-flex items-center px-3 py-1.5 rounded-full text-xs font-bold border border-blue-500/40 bg-blue-500/10 text-blue-400 hover:bg-blue-500/20">B</button>
+            <button type="button" data-filter-tier="C" class="chip inline-flex items-center px-3 py-1.5 rounded-full text-xs font-bold border border-yellow-500/40 bg-yellow-500/10 text-yellow-400 hover:bg-yellow-500/20">C</button>
+            <button type="button" data-filter-tier="D" class="chip inline-flex items-center px-3 py-1.5 rounded-full text-xs font-bold border border-red-500/40 bg-red-500/10 text-red-400 hover:bg-red-500/20">D</button>
+
+            <span class="text-slate-700">|</span>
+
+            <!-- Platform filters -->
+            <span class="text-xs text-slate-500 font-medium uppercase">Platform:</span>
+            {plat_chips}
+
+            <span class="text-slate-700">|</span>
+
+            <!-- NWM filter -->
+            <span class="text-xs text-slate-500 font-medium uppercase">NWM:</span>
+            <button type="button" data-filter-nwm="yes" class="chip inline-flex items-center px-3 py-1.5 rounded-full text-xs font-medium border border-amber-500/40 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20">Connected</button>
+            <button type="button" data-filter-nwm="no" class="chip inline-flex items-center px-3 py-1.5 rounded-full text-xs font-medium border border-slate-600 bg-slate-800 text-slate-400 hover:bg-slate-700">Not Connected</button>
+
+            <span class="text-slate-700">|</span>
+
+            <!-- Date range -->
+            <span class="text-xs text-slate-500 font-medium uppercase">Date:</span>
+            <button type="button" data-filter-date="1" class="chip inline-flex items-center px-3 py-1.5 rounded-full text-xs font-medium border border-slate-600 bg-slate-800 text-slate-400 hover:bg-slate-700">24h</button>
+            <button type="button" data-filter-date="7" class="chip inline-flex items-center px-3 py-1.5 rounded-full text-xs font-medium border border-slate-600 bg-slate-800 text-slate-400 hover:bg-slate-700">7d</button>
+            <button type="button" data-filter-date="30" class="chip inline-flex items-center px-3 py-1.5 rounded-full text-xs font-medium border border-slate-600 bg-slate-800 text-slate-400 hover:bg-slate-700">30d</button>
+            <button type="button" data-filter-date="0" class="chip inline-flex items-center px-3 py-1.5 rounded-full text-xs font-medium border border-slate-600 bg-slate-800 text-slate-400 hover:bg-slate-700">All</button>
+
+            <span class="text-slate-700">|</span>
+
+            <!-- Score range -->
+            <span class="text-xs text-slate-500 font-medium uppercase">Score:</span>
+            <input type="number" id="scoreMin" min="0" max="140" placeholder="Min" class="w-16 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-blue-500">
+            <span class="text-xs text-slate-500">-</span>
+            <input type="number" id="scoreMax" min="0" max="140" placeholder="Max" class="w-16 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-blue-500">
+        </div>
+
+        <!-- Sort + actions row -->
+        <div class="flex items-center justify-between">
+            <div class="flex items-center space-x-3">
+                <span class="text-xs text-slate-500 font-medium uppercase">Sort:</span>
+                <select id="sortSelect" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-blue-500">
+                    <option value="score_desc">Score (High to Low)</option>
+                    <option value="score_asc">Score (Low to High)</option>
+                    <option value="date_desc" selected>Date (Newest)</option>
+                    <option value="date_asc">Date (Oldest)</option>
+                    <option value="name_asc">Name (A-Z)</option>
+                    <option value="name_desc">Name (Z-A)</option>
+                    <option value="platform_asc">Platform (A-Z)</option>
+                </select>
+                <button onclick="clearAllFilters()" class="text-xs text-slate-400 hover:text-blue-400 transition-colors">Clear All</button>
+            </div>
+            <div class="flex items-center space-x-3">
+                <span id="resultCount" class="text-sm text-slate-400"></span>
+                <a href="/leads/export" class="bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-medium px-4 py-2 rounded-lg transition-colors flex items-center space-x-2">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                    <span>Export CSV</span>
+                </a>
+            </div>
+        </div>
+    </div>
 </div>
-<div class="flex items-center justify-between mb-4">
-    <p class="text-sm text-slate-400">Showing <span class="text-white font-medium">{len(leads)}</span> of <span class="text-white font-medium">{total_count}</span> leads</p>
-    <p class="text-xs text-slate-500">Page {page} of {total_pages}</p>
-</div>
+
+<!-- Leads Table -->
 <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden card-glow">
     <div class="overflow-x-auto">
-        <table class="w-full">
+        <table class="w-full" id="leadsTable">
             <thead><tr class="border-b border-slate-800">
-                <th class="text-left text-xs font-semibold text-slate-400 uppercase tracking-wider px-6 py-3">Name / Title</th>
+                <th class="text-left text-xs font-semibold text-slate-400 uppercase tracking-wider px-6 py-3">Lead</th>
                 <th class="text-left text-xs font-semibold text-slate-400 uppercase tracking-wider px-4 py-3">Score</th>
                 <th class="text-left text-xs font-semibold text-slate-400 uppercase tracking-wider px-4 py-3">Tier</th>
-                <th class="text-left text-xs font-semibold text-slate-400 uppercase tracking-wider px-4 py-3">Platform</th>
+                <th class="text-left text-xs font-semibold text-slate-400 uppercase tracking-wider px-4 py-3">Source</th>
+                <th class="text-left text-xs font-semibold text-slate-400 uppercase tracking-wider px-4 py-3">Relevance</th>
                 <th class="text-left text-xs font-semibold text-slate-400 uppercase tracking-wider px-4 py-3">City</th>
-                <th class="text-left text-xs font-semibold text-slate-400 uppercase tracking-wider px-4 py-3">Category</th>
-                <th class="text-left text-xs font-semibold text-slate-400 uppercase tracking-wider px-4 py-3">Scraped</th>
+                <th class="text-left text-xs font-semibold text-slate-400 uppercase tracking-wider px-4 py-3">Date</th>
                 <th class="text-left text-xs font-semibold text-slate-400 uppercase tracking-wider px-4 py-3">Actions</th>
             </tr></thead>
-            <tbody class="divide-y divide-slate-800/50">{rows_html}</tbody>
+            <tbody id="leadsBody" class="divide-y divide-slate-800/50"></tbody>
         </table>
     </div>
 </div>
-{pag_html}'''
+
+<!-- Pagination -->
+<div id="pagination" class="flex items-center justify-center space-x-2 mt-6"></div>
+
+<script>
+const ALL_LEADS = {leads_json};
+const PER_PAGE = 25;
+let currentPage = 1;
+let activeFilters = {{ tiers: new Set(), platforms: new Set(), nwm: null, dateDays: 0, scoreMin: null, scoreMax: null }};
+
+const tierColors = {{ A: 'bg-tier-a tier-a', B: 'bg-tier-b tier-b', C: 'bg-tier-c tier-c', D: 'bg-tier-d tier-d' }};
+const tierTextColors = {{ A: 'tier-a', B: 'tier-b', C: 'tier-c', D: 'tier-d' }};
+
+function escHtml(s) {{ return s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') : ''; }}
+
+function platformBadgeHtml(platform) {{
+    const p = (platform || 'unknown').toLowerCase();
+    const colorMap = {{ linkedin: 'border-blue-500/40 bg-blue-500/20 text-blue-400', craigslist: 'border-purple-500/40 bg-purple-500/20 text-purple-400', reddit: 'border-orange-500/40 bg-orange-500/20 text-orange-400', search: 'border-green-500/40 bg-green-500/20 text-green-400', ksl: 'border-amber-500/40 bg-amber-500/20 text-amber-400', facebook: 'border-blue-500/40 bg-blue-600/20 text-blue-400' }};
+    const cls = colorMap[p] || 'border-slate-500/40 bg-slate-500/20 text-slate-400';
+    return '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ' + cls + '">' + escHtml(platform).charAt(0).toUpperCase() + escHtml(platform).slice(1) + '</span>';
+}}
+
+function scoreBarHtml(value, max, color) {{
+    const pct = max > 0 ? Math.round(value / max * 100) : 0;
+    return '<div class="flex items-center space-x-1"><div class="w-16 bg-slate-800 rounded-full h-1"><div class="' + color + ' h-1 rounded-full score-bar" style="width:' + pct + '%"></div></div><span class="text-xs text-slate-500 w-8">' + value + '/' + max + '</span></div>';
+}}
+
+function getFilteredLeads() {{
+    const search = (document.getElementById('searchInput').value || '').toLowerCase();
+    const sortVal = document.getElementById('sortSelect').value;
+    const now = new Date();
+
+    let filtered = ALL_LEADS.filter(function(l) {{
+        // Text search
+        if (search) {{
+            const haystack = [l.name, l.title, l.description, l.source_url, l.city, l.state, l.current_role, l.relevance_reason, l.contact_email].join(' ').toLowerCase();
+            if (haystack.indexOf(search) === -1) return false;
+        }}
+        // Tier filter
+        if (activeFilters.tiers.size > 0 && !activeFilters.tiers.has(l.tier)) return false;
+        // Platform filter
+        if (activeFilters.platforms.size > 0 && !activeFilters.platforms.has(l.platform)) return false;
+        // NWM filter
+        if (activeFilters.nwm === 'yes' && !l.has_nwm) return false;
+        if (activeFilters.nwm === 'no' && l.has_nwm) return false;
+        // Date filter
+        if (activeFilters.dateDays > 0 && l.scraped_at_raw) {{
+            try {{
+                const ld = new Date(l.scraped_at_raw);
+                const diffDays = (now - ld) / (1000 * 60 * 60 * 24);
+                if (diffDays > activeFilters.dateDays) return false;
+            }} catch(e) {{}}
+        }}
+        // Score range
+        if (activeFilters.scoreMin !== null && l.score < activeFilters.scoreMin) return false;
+        if (activeFilters.scoreMax !== null && l.score > activeFilters.scoreMax) return false;
+        return true;
+    }});
+
+    // Sort
+    filtered.sort(function(a, b) {{
+        switch(sortVal) {{
+            case 'score_desc': return b.score - a.score;
+            case 'score_asc': return a.score - b.score;
+            case 'date_desc': return (b.scraped_at_raw || '').localeCompare(a.scraped_at_raw || '');
+            case 'date_asc': return (a.scraped_at_raw || '').localeCompare(b.scraped_at_raw || '');
+            case 'name_asc': return (a.name || '').localeCompare(b.name || '');
+            case 'name_desc': return (b.name || '').localeCompare(a.name || '');
+            case 'platform_asc': return (a.platform || '').localeCompare(b.platform || '');
+            default: return 0;
+        }}
+    }});
+
+    return filtered;
+}}
+
+function renderLeads() {{
+    const filtered = getFilteredLeads();
+    const totalPages = Math.max(1, Math.ceil(filtered.length / PER_PAGE));
+    currentPage = Math.min(currentPage, totalPages);
+    const start = (currentPage - 1) * PER_PAGE;
+    const pageLeads = filtered.slice(start, start + PER_PAGE);
+
+    document.getElementById('resultCount').textContent = 'Showing ' + pageLeads.length + ' of ' + filtered.length + ' leads (page ' + currentPage + '/' + totalPages + ')';
+
+    let html = '';
+    pageLeads.forEach(function(l) {{
+        const displayName = escHtml(l.name || l.title || 'Unnamed');
+        const subTitle = l.current_role ? '<p class="text-xs text-slate-500 truncate max-w-[200px]">' + escHtml(l.current_role) + '</p>' : (l.title && l.name ? '<p class="text-xs text-slate-500 truncate max-w-[200px]">' + escHtml(l.title) + '</p>' : '');
+        const tc = tierColors[l.tier] || tierColors['D'];
+        const nwmBadge = l.has_nwm ? '<span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-amber-500/10 text-amber-400 border border-amber-500/30 ml-1" title="NWM Connection +40">NWM</span>' : '';
+
+        const sourceLink = l.source_url ? '<a href="' + escHtml(l.source_url) + '" target="_blank" rel="noopener" class="text-blue-400 hover:text-blue-300 text-xs truncate block max-w-[120px]" title="' + escHtml(l.source_url) + '">View source</a>' : '<span class="text-xs text-slate-600">--</span>';
+
+        const reasonText = l.relevance_reason ? '<span class="text-xs text-emerald-400/80 truncate block max-w-[180px]" title="' + escHtml(l.relevance_reason) + '">' + escHtml(l.relevance_reason) + '</span>' : '<span class="text-xs text-slate-600">--</span>';
+
+        const enhancedBadge = l.enhanced ? '<span class="text-xs text-purple-400">Enhanced</span>' : '';
+
+        const leadDataJson = escHtml(JSON.stringify({{ name: l.name || l.title, platform: l.platform, city: l.city, score: l.score }}));
+
+        html += '<tr class="hover:bg-slate-800/30 transition-colors">';
+        html += '<td class="px-6 py-3"><div><p class="text-sm font-medium text-slate-200">' + displayName + '</p>' + subTitle + '</div></td>';
+        html += '<td class="px-4 py-3"><div class="flex flex-col space-y-0.5">';
+        html += '<span class="text-sm font-mono font-bold ' + (tierTextColors[l.tier] || '') + '">' + l.score + '</span>';
+        html += scoreBarHtml(l.score_career_fit, 35, 'bg-blue-500');
+        html += scoreBarHtml(l.score_motivation, 25, 'bg-purple-500');
+        html += scoreBarHtml(l.score_nwm_connection, 40, 'bg-amber-500');
+        html += '</div></td>';
+        html += '<td class="px-4 py-3"><span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold border ' + tc + '">' + l.tier + '</span>' + nwmBadge + '</td>';
+        html += '<td class="px-4 py-3"><div class="flex flex-col space-y-1">' + platformBadgeHtml(l.platform) + sourceLink + '</div></td>';
+        html += '<td class="px-4 py-3">' + reasonText + '</td>';
+        html += '<td class="px-4 py-3"><span class="text-sm text-slate-400">' + escHtml(l.city || '-') + '</span></td>';
+        html += '<td class="px-4 py-3"><span class="text-xs text-slate-500">' + escHtml(l.scraped_at) + '</span></td>';
+        html += '<td class="px-4 py-3"><div class="flex items-center space-x-2">';
+        html += '<a href="/leads/' + l.id + '" class="text-blue-400 hover:text-blue-300 text-sm font-medium transition-colors">View</a>';
+        html += '<button onclick=\'openEnhanceModal("' + l.id + '", "' + escHtml(l.name || l.title || "Lead") + '", ' + JSON.stringify({{ name: l.name || l.title, platform: l.platform, city: l.city, score: l.score }}) + ')\' class="text-purple-400 hover:text-purple-300 text-xs font-medium transition-colors">Enhance</button>';
+        html += enhancedBadge;
+        html += '</div></td>';
+        html += '</tr>';
+    }});
+
+    if (!pageLeads.length) {{
+        html = '<tr><td colspan="8" class="px-6 py-12 text-center text-slate-500">No leads found matching your criteria.</td></tr>';
+    }}
+
+    document.getElementById('leadsBody').innerHTML = html;
+
+    // Pagination
+    let pagHtml = '';
+    if (totalPages > 1) {{
+        if (currentPage > 1) pagHtml += '<button onclick="goPage(' + (currentPage - 1) + ')" class="bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm px-3 py-1.5 rounded-lg transition-colors">Prev</button>';
+        for (let p = 1; p <= totalPages; p++) {{
+            if (p === currentPage) {{
+                pagHtml += '<span class="bg-blue-600 text-white text-sm px-3 py-1.5 rounded-lg">' + p + '</span>';
+            }} else if (p <= 3 || p > totalPages - 3 || Math.abs(p - currentPage) <= 1) {{
+                pagHtml += '<button onclick="goPage(' + p + ')" class="bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm px-3 py-1.5 rounded-lg transition-colors">' + p + '</button>';
+            }} else if (p === 4 || p === totalPages - 3) {{
+                pagHtml += '<span class="text-slate-500 text-sm">...</span>';
+            }}
+        }}
+        if (currentPage < totalPages) pagHtml += '<button onclick="goPage(' + (currentPage + 1) + ')" class="bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm px-3 py-1.5 rounded-lg transition-colors">Next</button>';
+    }}
+    document.getElementById('pagination').innerHTML = pagHtml;
+}}
+
+function goPage(p) {{ currentPage = p; renderLeads(); window.scrollTo(0, 0); }}
+
+function clearAllFilters() {{
+    activeFilters = {{ tiers: new Set(), platforms: new Set(), nwm: null, dateDays: 0, scoreMin: null, scoreMax: null }};
+    document.getElementById('searchInput').value = '';
+    document.getElementById('scoreMin').value = '';
+    document.getElementById('scoreMax').value = '';
+    document.querySelectorAll('.chip').forEach(function(c) {{ c.classList.remove('active'); c.style.boxShadow = ''; }});
+    currentPage = 1;
+    renderLeads();
+}}
+
+// Chip click handlers
+document.querySelectorAll('[data-filter-tier]').forEach(function(btn) {{
+    btn.addEventListener('click', function() {{
+        const tier = this.dataset.filterTier;
+        if (activeFilters.tiers.has(tier)) {{
+            activeFilters.tiers.delete(tier);
+            this.style.boxShadow = '';
+            this.classList.remove('active');
+        }} else {{
+            activeFilters.tiers.add(tier);
+            this.style.boxShadow = '0 0 0 2px rgba(59,130,246,0.5)';
+            this.classList.add('active');
+        }}
+        currentPage = 1;
+        renderLeads();
+    }});
+}});
+
+document.querySelectorAll('[data-filter-platform]').forEach(function(btn) {{
+    btn.addEventListener('click', function() {{
+        const plat = this.dataset.filterPlatform;
+        if (activeFilters.platforms.has(plat)) {{
+            activeFilters.platforms.delete(plat);
+            this.style.boxShadow = '';
+            this.classList.remove('active');
+        }} else {{
+            activeFilters.platforms.add(plat);
+            this.style.boxShadow = '0 0 0 2px rgba(59,130,246,0.5)';
+            this.classList.add('active');
+        }}
+        currentPage = 1;
+        renderLeads();
+    }});
+}});
+
+document.querySelectorAll('[data-filter-nwm]').forEach(function(btn) {{
+    btn.addEventListener('click', function() {{
+        const val = this.dataset.filterNwm;
+        document.querySelectorAll('[data-filter-nwm]').forEach(function(b) {{ b.style.boxShadow = ''; b.classList.remove('active'); }});
+        if (activeFilters.nwm === val) {{
+            activeFilters.nwm = null;
+        }} else {{
+            activeFilters.nwm = val;
+            this.style.boxShadow = '0 0 0 2px rgba(59,130,246,0.5)';
+            this.classList.add('active');
+        }}
+        currentPage = 1;
+        renderLeads();
+    }});
+}});
+
+document.querySelectorAll('[data-filter-date]').forEach(function(btn) {{
+    btn.addEventListener('click', function() {{
+        const days = parseInt(this.dataset.filterDate);
+        document.querySelectorAll('[data-filter-date]').forEach(function(b) {{ b.style.boxShadow = ''; b.classList.remove('active'); }});
+        if (activeFilters.dateDays === days) {{
+            activeFilters.dateDays = 0;
+        }} else {{
+            activeFilters.dateDays = days;
+            this.style.boxShadow = '0 0 0 2px rgba(59,130,246,0.5)';
+            this.classList.add('active');
+        }}
+        currentPage = 1;
+        renderLeads();
+    }});
+}});
+
+document.getElementById('searchInput').addEventListener('input', function() {{ currentPage = 1; renderLeads(); }});
+document.getElementById('sortSelect').addEventListener('change', function() {{ currentPage = 1; renderLeads(); }});
+document.getElementById('scoreMin').addEventListener('input', function() {{
+    activeFilters.scoreMin = this.value ? parseInt(this.value) : null;
+    currentPage = 1;
+    renderLeads();
+}});
+document.getElementById('scoreMax').addEventListener('input', function() {{
+    activeFilters.scoreMax = this.value ? parseInt(this.value) : null;
+    currentPage = 1;
+    renderLeads();
+}});
+
+// Initial render
+renderLeads();
+</script>'''
 
         return _render_page("Leads", f"{total_count} leads in database", "leads", content)
     finally:
@@ -639,37 +1289,25 @@ def leads_list():
 def leads_export():
     db = get_db()
     try:
-        search = request.args.get("search", "").strip()
-        tier_filter = request.args.get("tier", "").strip()
-        platform_filter = request.args.get("platform", "").strip()
-
-        query = "SELECT * FROM jobs WHERE job_type='raw_scrape'"
-        params = []
-        if platform_filter:
-            query += " AND json_extract(payload, '$.platform')=?"
-            params.append(platform_filter)
-        if search:
-            query += " AND payload LIKE ?"
-            params.append(f"%{search}%")
-        query += " ORDER BY created_at DESC"
-
-        rows = db.execute(query, params).fetchall()
+        rows = db.execute(
+            "SELECT * FROM jobs WHERE job_type='raw_scrape' ORDER BY created_at DESC"
+        ).fetchall()
         leads = [_parse_lead(row) for row in rows]
-        if tier_filter:
-            leads = [l for l in leads if l["tier"] == tier_filter]
 
         output = io.StringIO()
         writer = csv.writer(output)
         writer.writerow([
             "Name", "Title", "Score", "Tier", "Platform", "City", "State",
             "Category", "Contact Email", "Contact Phone", "Source URL",
-            "Agent", "Scraped At",
+            "Relevance Reason", "NWM Connection", "Agent", "Scraped At",
         ])
         for l in leads:
             writer.writerow([
                 l["name"], l["title"], l["score"], l["tier"], l["platform"],
                 l["city"], l["state"], l["category"], l["contact_email"],
-                l["contact_phone"], l["source_url"], l["agent"], l["scraped_at"],
+                l["contact_phone"], l["source_url"], l["relevance_reason"],
+                "Yes" if l["has_nwm_mutual_connection"] else "No",
+                l["agent"], l["scraped_at"],
             ])
 
         resp = Response(output.getvalue(), mimetype="text/csv")
@@ -695,23 +1333,58 @@ def lead_detail(lead_id):
 
         lead = _parse_lead(row)
 
-        # Score percentages for bars and radar
+        # Score percentages for bars
         cf_pct = int(lead["score_career_fit"] / 35 * 100) if lead["score_career_fit"] else 0
         mo_pct = int(lead["score_motivation"] / 25 * 100) if lead["score_motivation"] else 0
         ps_pct = int(lead["score_people_skills"] / 20 * 100) if lead["score_people_skills"] else 0
         dm_pct = int(lead["score_demographics"] / 10 * 100) if lead["score_demographics"] else 0
         dq_pct = int(lead["score_data_quality"] / 10 * 100) if lead["score_data_quality"] else 0
+        nwm_pct = int(lead["score_nwm_connection"] / 40 * 100) if lead["score_nwm_connection"] else 0
 
         tier_class = {"A": "bg-tier-a tier-a", "B": "bg-tier-b tier-b", "C": "bg-tier-c tier-c", "D": "bg-tier-d tier-d"}.get(lead["tier"], "bg-tier-d tier-d")
-        safe_name = (lead["name"] or lead["title"] or "Unnamed Lead").replace("<", "&lt;").replace(">", "&gt;")
-        safe_title = (lead["title"] or "").replace("<", "&lt;").replace(">", "&gt;")
-        safe_desc = (lead["source_post_text"] or "").replace("<", "&lt;").replace(">", "&gt;")
-        safe_url = (lead["source_url"] or "").replace("<", "&lt;").replace(">", "&gt;")
+        safe_name = _esc(lead["name"] or lead["title"] or "Unnamed Lead")
+        safe_title = _esc(lead["title"] or "")
+        safe_desc = _esc(lead["source_post_text"] or "")
+        safe_url = _esc(lead["source_url"] or "")
+
+        # Score explanations
+        explanations = lead["score_explanations"]
+
+        def _explain_html(dimension, label):
+            items = explanations.get(dimension, [])
+            if not items:
+                return '<p class="text-xs text-slate-600 italic">No signals detected</p>'
+            return "".join(f'<p class="text-xs text-slate-400">{_esc(item)}</p>' for item in items)
+
+        # Relevance reason display
+        relevance_html = ""
+        if lead["relevance_reason"]:
+            relevance_html = f'''
+            <div class="bg-gradient-to-r from-emerald-900/20 to-green-900/20 border border-emerald-500/30 rounded-xl p-4 mb-6">
+                <div class="flex items-center space-x-2 mb-1">
+                    <svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                    <span class="text-xs font-semibold text-emerald-400 uppercase">Relevance Reason</span>
+                </div>
+                <p class="text-sm text-emerald-300">{_esc(lead["relevance_reason"])}</p>
+            </div>'''
+
+        # NWM connection display
+        nwm_html = ""
+        if lead["has_nwm_mutual_connection"]:
+            nwm_names = ", ".join(lead["nwm_mutual_names"]) if lead["nwm_mutual_names"] else "Detected"
+            nwm_html = f'''
+            <div class="bg-gradient-to-r from-amber-900/20 to-yellow-900/20 border border-amber-500/30 rounded-xl p-4 mb-6">
+                <div class="flex items-center space-x-2 mb-1">
+                    <svg class="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101"/></svg>
+                    <span class="text-xs font-semibold text-amber-400 uppercase">NWM Mutual Connection (+40 boost)</span>
+                </div>
+                <p class="text-sm text-amber-300">{_esc(nwm_names)}</p>
+            </div>'''
 
         # Signals tags
         signals_html = ""
         if lead["recruiting_signals"]:
-            tags = "".join(f'<span class="bg-blue-500/10 text-blue-400 border border-blue-500/30 px-3 py-1 rounded-full text-xs font-medium">{s}</span>' for s in lead["recruiting_signals"])
+            tags = "".join(f'<span class="bg-blue-500/10 text-blue-400 border border-blue-500/30 px-3 py-1 rounded-full text-xs font-medium">{_esc(s)}</span>' for s in lead["recruiting_signals"])
             signals_html = f'''
             <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 card-glow">
                 <h4 class="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-4">Recruiting Signals</h4>
@@ -728,37 +1401,55 @@ def lead_detail(lead_id):
             sentiment_html = '<p class="text-sm text-slate-500 text-center py-4">No sentiment data available.</p>'
 
         enriched_dot = '<div class="w-3 h-3 rounded-full bg-green-500"></div><span class="text-sm text-slate-300">Enriched</span>' if lead["enriched"] else '<div class="w-3 h-3 rounded-full bg-slate-600"></div><span class="text-sm text-slate-500">Not Enriched</span>'
+        enhanced_dot = '<div class="w-3 h-3 rounded-full bg-purple-500"></div><span class="text-sm text-slate-300">Enhanced</span>' if lead["enhanced"] else '<div class="w-3 h-3 rounded-full bg-slate-600"></div><span class="text-sm text-slate-500">Not Enhanced</span>'
         compliance_dot = '<div class="w-3 h-3 rounded-full bg-green-500"></div><span class="text-sm text-slate-300">Compliance Cleared</span>' if lead["compliance_cleared"] else '<div class="w-3 h-3 rounded-full bg-slate-600"></div><span class="text-sm text-slate-500">Pending Compliance</span>'
 
         source_url_html = f'<div class="mb-4"><p class="text-xs text-slate-500 mb-1">Source URL</p><a href="{safe_url}" target="_blank" rel="noopener" class="text-blue-400 hover:text-blue-300 text-sm break-all">{safe_url}</a></div>' if safe_url else ""
         post_text_html = f'<div><p class="text-xs text-slate-500 mb-1">Original Post Text</p><div class="bg-slate-800/50 rounded-lg p-4 text-sm text-slate-300 whitespace-pre-wrap max-h-60 overflow-y-auto">{safe_desc}</div></div>' if safe_desc else ""
 
+        lead_data_json = json.dumps({"name": lead["name"] or lead["title"], "platform": lead["platform"], "city": lead["city"], "score": lead["score"]})
+
         content = f'''
-<a href="/leads" class="inline-flex items-center text-sm text-slate-400 hover:text-blue-400 mb-6 transition-colors">
-    <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
-    Back to Leads
-</a>
+<div class="flex items-center justify-between mb-6">
+    <a href="/leads" class="inline-flex items-center text-sm text-slate-400 hover:text-blue-400 transition-colors">
+        <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+        Back to Leads
+    </a>
+    <button onclick='openEnhanceModal("{lead_id}", "{_esc(lead["name"] or lead["title"] or "Lead")}", {lead_data_json})' class="bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white text-sm font-semibold px-5 py-2.5 rounded-lg transition-all flex items-center space-x-2">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+        <span>Enhance Lead</span>
+    </button>
+</div>
+
+{relevance_html}
+{nwm_html}
+
 <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
     <div class="lg:col-span-2 space-y-6">
         <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 card-glow">
-            <h3 class="text-2xl font-bold text-white">{safe_name}</h3>
-            {"<p class='text-slate-400 mt-1'>" + lead["current_role"] + "</p>" if lead["current_role"] else ""}
+            <div class="flex items-center justify-between">
+                <div>
+                    <h3 class="text-2xl font-bold text-white">{safe_name}</h3>
+                    {"<p class='text-slate-400 mt-1'>" + _esc(lead["current_role"]) + "</p>" if lead["current_role"] else ""}
+                </div>
+                {_platform_badge(lead["platform"])}
+            </div>
             <div class="flex items-center space-x-4 mt-3">
-                <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-bold border {tier_class}">{lead["tier"]}-Tier &middot; {lead["score"]}/100</span>
-                <span class="text-sm text-slate-500">{lead["platform"].title()}</span>
+                <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-bold border {tier_class}">{lead["tier"]}-Tier &middot; {lead["score"]}/140</span>
+                {"<span class='inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-500/10 text-amber-400 border border-amber-500/30'>NWM Connected +40</span>" if lead["has_nwm_mutual_connection"] else ""}
             </div>
         </div>
         <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 card-glow">
             <h4 class="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-4">Lead Details</h4>
             <div class="grid grid-cols-2 gap-4">
-                <div class="bg-slate-800/50 rounded-lg p-3"><p class="text-xs text-slate-500 mb-1">Platform</p><p class="text-sm text-slate-200">{lead["platform"].title()}</p></div>
-                <div class="bg-slate-800/50 rounded-lg p-3"><p class="text-xs text-slate-500 mb-1">Category</p><p class="text-sm text-slate-200">{lead["category"] or "N/A"}</p></div>
-                <div class="bg-slate-800/50 rounded-lg p-3"><p class="text-xs text-slate-500 mb-1">City</p><p class="text-sm text-slate-200">{lead["city"] or "N/A"}{", " + lead["state"] if lead["state"] else ""}</p></div>
-                <div class="bg-slate-800/50 rounded-lg p-3"><p class="text-xs text-slate-500 mb-1">Agent</p><p class="text-sm text-slate-200">{lead["agent"] or "N/A"}</p></div>
-                <div class="bg-slate-800/50 rounded-lg p-3"><p class="text-xs text-slate-500 mb-1">Contact Email</p><p class="text-sm text-slate-200">{lead["contact_email"] or "N/A"}</p></div>
-                <div class="bg-slate-800/50 rounded-lg p-3"><p class="text-xs text-slate-500 mb-1">Contact Phone</p><p class="text-sm text-slate-200">{lead["contact_phone"] or "N/A"}</p></div>
-                <div class="bg-slate-800/50 rounded-lg p-3"><p class="text-xs text-slate-500 mb-1">Post ID</p><p class="text-sm text-slate-200">{lead["post_id"] or "N/A"}</p></div>
-                <div class="bg-slate-800/50 rounded-lg p-3"><p class="text-xs text-slate-500 mb-1">Scraped At</p><p class="text-sm text-slate-200">{lead["scraped_at"]}</p></div>
+                <div class="bg-slate-800/50 rounded-lg p-3"><p class="text-xs text-slate-500 mb-1">Platform</p><p class="text-sm text-slate-200">{_esc(lead["platform"]).title()}</p></div>
+                <div class="bg-slate-800/50 rounded-lg p-3"><p class="text-xs text-slate-500 mb-1">Category</p><p class="text-sm text-slate-200">{_esc(lead["category"]) or "N/A"}</p></div>
+                <div class="bg-slate-800/50 rounded-lg p-3"><p class="text-xs text-slate-500 mb-1">City</p><p class="text-sm text-slate-200">{_esc(lead["city"]) or "N/A"}{", " + _esc(lead["state"]) if lead["state"] else ""}</p></div>
+                <div class="bg-slate-800/50 rounded-lg p-3"><p class="text-xs text-slate-500 mb-1">Agent</p><p class="text-sm text-slate-200">{_esc(lead["agent"]) or "N/A"}</p></div>
+                <div class="bg-slate-800/50 rounded-lg p-3"><p class="text-xs text-slate-500 mb-1">Contact Email</p><p class="text-sm text-slate-200">{_esc(lead["contact_email"]) or "N/A"}</p></div>
+                <div class="bg-slate-800/50 rounded-lg p-3"><p class="text-xs text-slate-500 mb-1">Contact Phone</p><p class="text-sm text-slate-200">{_esc(lead["contact_phone"]) or "N/A"}</p></div>
+                <div class="bg-slate-800/50 rounded-lg p-3"><p class="text-xs text-slate-500 mb-1">LinkedIn</p><p class="text-sm text-slate-200">{('<a href="' + _esc(lead["linkedin_url"]) + '" target="_blank" class="text-blue-400 hover:text-blue-300">' + _esc(lead["linkedin_url"])[:50] + '</a>') if lead["linkedin_url"] else "N/A"}</p></div>
+                <div class="bg-slate-800/50 rounded-lg p-3"><p class="text-xs text-slate-500 mb-1">Scraped At</p><p class="text-sm text-slate-200">{_esc(lead["scraped_at"])}</p></div>
             </div>
         </div>
         <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 card-glow">
@@ -769,28 +1460,50 @@ def lead_detail(lead_id):
         </div>
         {signals_html}
         <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 card-glow">
-            <h4 class="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-4">Compliance &amp; Enrichment</h4>
-            <div class="grid grid-cols-2 gap-4">
+            <h4 class="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-4">Status</h4>
+            <div class="grid grid-cols-3 gap-4">
                 <div class="flex items-center space-x-3">{enriched_dot}</div>
+                <div class="flex items-center space-x-3">{enhanced_dot}</div>
                 <div class="flex items-center space-x-3">{compliance_dot}</div>
             </div>
         </div>
     </div>
     <div class="space-y-6">
+        <!-- Score Breakdown -->
         <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 card-glow">
             <h4 class="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-4">Score Breakdown</h4>
             <div style="height:260px"><canvas id="radarChart"></canvas></div>
-            <div class="mt-4 space-y-2">
-                <div class="flex justify-between text-xs"><span class="text-slate-400">Career Fit</span><span class="text-slate-200 font-medium">{lead["score_career_fit"]}/35</span></div>
-                <div class="w-full bg-slate-800 rounded-full h-1.5"><div class="bg-blue-500 h-1.5 rounded-full" style="width:{cf_pct}%"></div></div>
-                <div class="flex justify-between text-xs"><span class="text-slate-400">Motivation</span><span class="text-slate-200 font-medium">{lead["score_motivation"]}/25</span></div>
-                <div class="w-full bg-slate-800 rounded-full h-1.5"><div class="bg-purple-500 h-1.5 rounded-full" style="width:{mo_pct}%"></div></div>
-                <div class="flex justify-between text-xs"><span class="text-slate-400">People Skills</span><span class="text-slate-200 font-medium">{lead["score_people_skills"]}/20</span></div>
-                <div class="w-full bg-slate-800 rounded-full h-1.5"><div class="bg-cyan-500 h-1.5 rounded-full" style="width:{ps_pct}%"></div></div>
-                <div class="flex justify-between text-xs"><span class="text-slate-400">Demographics</span><span class="text-slate-200 font-medium">{lead["score_demographics"]}/10</span></div>
-                <div class="w-full bg-slate-800 rounded-full h-1.5"><div class="bg-amber-500 h-1.5 rounded-full" style="width:{dm_pct}%"></div></div>
-                <div class="flex justify-between text-xs"><span class="text-slate-400">Data Quality</span><span class="text-slate-200 font-medium">{lead["score_data_quality"]}/10</span></div>
-                <div class="w-full bg-slate-800 rounded-full h-1.5"><div class="bg-green-500 h-1.5 rounded-full" style="width:{dq_pct}%"></div></div>
+            <div class="mt-4 space-y-3">
+                <div>
+                    <div class="flex justify-between text-xs"><span class="text-slate-400">Career Fit</span><span class="text-slate-200 font-medium">{lead["score_career_fit"]}/35</span></div>
+                    <div class="w-full bg-slate-800 rounded-full h-1.5 mt-0.5"><div class="bg-blue-500 h-1.5 rounded-full score-bar" style="width:{cf_pct}%"></div></div>
+                    <div class="mt-1">{_explain_html("career_fit", "Career Fit")}</div>
+                </div>
+                <div>
+                    <div class="flex justify-between text-xs"><span class="text-slate-400">Motivation</span><span class="text-slate-200 font-medium">{lead["score_motivation"]}/25</span></div>
+                    <div class="w-full bg-slate-800 rounded-full h-1.5 mt-0.5"><div class="bg-purple-500 h-1.5 rounded-full score-bar" style="width:{mo_pct}%"></div></div>
+                    <div class="mt-1">{_explain_html("motivation", "Motivation")}</div>
+                </div>
+                <div>
+                    <div class="flex justify-between text-xs"><span class="text-slate-400">People Skills</span><span class="text-slate-200 font-medium">{lead["score_people_skills"]}/20</span></div>
+                    <div class="w-full bg-slate-800 rounded-full h-1.5 mt-0.5"><div class="bg-cyan-500 h-1.5 rounded-full score-bar" style="width:{ps_pct}%"></div></div>
+                    <div class="mt-1">{_explain_html("people_skills", "People Skills")}</div>
+                </div>
+                <div>
+                    <div class="flex justify-between text-xs"><span class="text-slate-400">Demographics</span><span class="text-slate-200 font-medium">{lead["score_demographics"]}/10</span></div>
+                    <div class="w-full bg-slate-800 rounded-full h-1.5 mt-0.5"><div class="bg-amber-500 h-1.5 rounded-full score-bar" style="width:{dm_pct}%"></div></div>
+                    <div class="mt-1">{_explain_html("demographics", "Demographics")}</div>
+                </div>
+                <div>
+                    <div class="flex justify-between text-xs"><span class="text-slate-400">Data Quality</span><span class="text-slate-200 font-medium">{lead["score_data_quality"]}/10</span></div>
+                    <div class="w-full bg-slate-800 rounded-full h-1.5 mt-0.5"><div class="bg-green-500 h-1.5 rounded-full score-bar" style="width:{dq_pct}%"></div></div>
+                    <div class="mt-1">{_explain_html("data_quality", "Data Quality")}</div>
+                </div>
+                <div>
+                    <div class="flex justify-between text-xs"><span class="text-amber-400">NWM Connection</span><span class="text-amber-300 font-medium">{lead["score_nwm_connection"]}/40</span></div>
+                    <div class="w-full bg-slate-800 rounded-full h-1.5 mt-0.5"><div class="bg-amber-500 h-1.5 rounded-full score-bar" style="width:{nwm_pct}%"></div></div>
+                    <p class="text-xs text-slate-500 mt-1">{"Mutual connection detected" if lead["has_nwm_mutual_connection"] else "No NWM connection found"}</p>
+                </div>
             </div>
         </div>
         <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 card-glow">
@@ -803,7 +1516,7 @@ def lead_detail(lead_id):
 Chart.defaults.color='#94a3b8';
 new Chart(document.getElementById('radarChart'),{{
     type:'radar',
-    data:{{ labels:['Career Fit','Motivation','People Skills','Demographics','Data Quality'], datasets:[{{ label:'Score',data:[{cf_pct},{mo_pct},{ps_pct},{dm_pct},{dq_pct}],backgroundColor:'rgba(59,130,246,0.2)',borderColor:'#3b82f6',pointBackgroundColor:'#3b82f6',pointBorderColor:'#1e293b',pointBorderWidth:2 }}] }},
+    data:{{ labels:['Career Fit','Motivation','People Skills','Demographics','Data Quality','NWM Connection'], datasets:[{{ label:'Score',data:[{cf_pct},{mo_pct},{ps_pct},{dm_pct},{dq_pct},{nwm_pct}],backgroundColor:'rgba(59,130,246,0.2)',borderColor:'#3b82f6',pointBackgroundColor:'#3b82f6',pointBorderColor:'#1e293b',pointBorderWidth:2 }}] }},
     options:{{ responsive:true,maintainAspectRatio:false,plugins:{{ legend:{{ display:false }} }},scales:{{ r:{{ beginAtZero:true,max:100,ticks:{{ stepSize:25,font:{{ size:9 }},backdropColor:'transparent' }},grid:{{ color:'rgba(51,65,85,0.5)' }},angleLines:{{ color:'rgba(51,65,85,0.5)' }},pointLabels:{{ font:{{ size:10 }} }} }} }} }}
 }});
 </script>'''
@@ -824,7 +1537,10 @@ def agents_page():
         run_rows = db.execute(
             "SELECT payload, created_at FROM jobs WHERE job_type='agent_run_log' ORDER BY created_at DESC"
         ).fetchall()
-        ar_rows = db.execute("SELECT * FROM agent_runs ORDER BY completed_at DESC").fetchall()
+        try:
+            ar_rows = db.execute("SELECT * FROM agent_runs ORDER BY completed_at DESC").fetchall()
+        except Exception:
+            ar_rows = []
 
         agent_map = {}
         for row in run_rows:
@@ -870,27 +1586,22 @@ def agents_page():
             elif ag["last_status"] in ("failed", "error"):
                 status_html = '<span class="inline-flex items-center space-x-1.5 text-xs font-medium text-red-400"><div class="w-1.5 h-1.5 rounded-full bg-red-500"></div><span>Error</span></span>'
             else:
-                status_html = f'<span class="inline-flex items-center space-x-1.5 text-xs font-medium text-yellow-400"><div class="w-1.5 h-1.5 rounded-full bg-yellow-500 pulse-dot"></div><span>{ag["last_status"].title()}</span></span>'
+                status_html = f'<span class="inline-flex items-center space-x-1.5 text-xs font-medium text-yellow-400"><div class="w-1.5 h-1.5 rounded-full bg-yellow-500 pulse-dot"></div><span>{_esc(ag["last_status"]).title()}</span></span>'
 
             err_cls = "text-red-400" if ag["error_count"] > 0 else "text-slate-500"
             rows_html += f'''<tr class="hover:bg-slate-800/30 transition-colors">
-                <td class="px-6 py-3"><a href="/agents/{ag["name"]}" class="text-sm font-medium text-blue-400 hover:text-blue-300 transition-colors">{ag["name"]}</a></td>
-                <td class="px-4 py-3"><span class="text-sm text-slate-400">{ag["platform"].title()}</span></td>
+                <td class="px-6 py-3"><a href="/agents/{_esc(ag["name"])}" class="text-sm font-medium text-blue-400 hover:text-blue-300 transition-colors">{_esc(ag["name"])}</a></td>
+                <td class="px-4 py-3"><span class="text-sm text-slate-400">{_esc(ag["platform"]).title()}</span></td>
                 <td class="px-4 py-3">{status_html}</td>
                 <td class="px-4 py-3"><span class="text-sm text-slate-300 font-mono">{ag["run_count"]}</span></td>
                 <td class="px-4 py-3"><span class="text-sm text-slate-300 font-mono">{ag["total_found"]}</span></td>
                 <td class="px-4 py-3"><span class="text-sm text-slate-300 font-mono">{ag["total_new"]}</span></td>
                 <td class="px-4 py-3"><span class="text-sm font-mono {err_cls}">{ag["error_count"]}</span></td>
                 <td class="px-4 py-3"><span class="text-xs text-slate-500">{ag["last_run"]}</span></td>
-                <td class="px-4 py-3">
-                    <div class="w-10 h-5 bg-green-500/30 rounded-full border border-green-500/50 cursor-pointer relative">
-                        <div class="w-4 h-4 bg-green-500 rounded-full absolute top-0.5 left-5"></div>
-                    </div>
-                </td>
             </tr>'''
 
         if not agents:
-            rows_html = '<tr><td colspan="9" class="px-6 py-12 text-center text-slate-500">No agent data recorded yet.</td></tr>'
+            rows_html = '<tr><td colspan="8" class="px-6 py-12 text-center text-slate-500">No agent data recorded yet.</td></tr>'
 
         content = f'''
 <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
@@ -922,7 +1633,6 @@ def agents_page():
             <th class="text-left text-xs font-semibold text-slate-400 uppercase tracking-wider px-4 py-3">Items New</th>
             <th class="text-left text-xs font-semibold text-slate-400 uppercase tracking-wider px-4 py-3">Errors</th>
             <th class="text-left text-xs font-semibold text-slate-400 uppercase tracking-wider px-4 py-3">Last Run</th>
-            <th class="text-left text-xs font-semibold text-slate-400 uppercase tracking-wider px-4 py-3">Enabled</th>
         </tr></thead>
         <tbody class="divide-y divide-slate-800/50">{rows_html}</tbody>
     </table></div>
@@ -954,19 +1664,22 @@ def agent_detail(agent_name):
             total_found += p.get("items_found", 0)
             total_new += p.get("items_new", 0)
 
-        ar_rows = db.execute("SELECT * FROM agent_runs WHERE agent_name=? ORDER BY completed_at DESC", (agent_name,)).fetchall()
-        for row in ar_rows:
-            runs.append({"status": row["status"], "items_found": row["items_found"], "items_new": row["items_new"], "time": fmt_dt(row["completed_at"]), "error": row["error"]})
-            total_found += row["items_found"]
-            total_new += row["items_new"]
+        try:
+            ar_rows = db.execute("SELECT * FROM agent_runs WHERE agent_name=? ORDER BY completed_at DESC", (agent_name,)).fetchall()
+            for row in ar_rows:
+                runs.append({"status": row["status"], "items_found": row["items_found"], "items_new": row["items_new"], "time": fmt_dt(row["completed_at"]), "error": row["error"]})
+                total_found += row["items_found"]
+                total_new += row["items_new"]
+        except Exception:
+            pass
 
         rows_html = ""
         for run in runs:
             if run["status"] in ("success", "completed"):
-                s_html = '<span class="inline-flex items-center space-x-1.5 text-xs font-medium text-green-400"><div class="w-1.5 h-1.5 rounded-full bg-green-500"></div><span>' + run["status"].title() + '</span></span>'
+                s_html = '<span class="inline-flex items-center space-x-1.5 text-xs font-medium text-green-400"><div class="w-1.5 h-1.5 rounded-full bg-green-500"></div><span>' + _esc(run["status"]).title() + '</span></span>'
             else:
-                s_html = '<span class="inline-flex items-center space-x-1.5 text-xs font-medium text-red-400"><div class="w-1.5 h-1.5 rounded-full bg-red-500"></div><span>' + run["status"].title() + '</span></span>'
-            err = (run["error"] or "-").replace("<", "&lt;")
+                s_html = '<span class="inline-flex items-center space-x-1.5 text-xs font-medium text-red-400"><div class="w-1.5 h-1.5 rounded-full bg-red-500"></div><span>' + _esc(run["status"]).title() + '</span></span>'
+            err = _esc(run["error"] or "-")
             rows_html += f'<tr class="hover:bg-slate-800/30 transition-colors"><td class="px-6 py-3">{s_html}</td><td class="px-4 py-3 text-sm text-slate-300 font-mono">{run["items_found"]}</td><td class="px-4 py-3 text-sm text-slate-300 font-mono">{run["items_new"]}</td><td class="px-4 py-3 text-xs text-slate-500">{run["time"]}</td><td class="px-4 py-3 text-xs text-red-400 max-w-xs truncate">{err}</td></tr>'
 
         content = f'''
@@ -976,7 +1689,7 @@ def agent_detail(agent_name):
 </a>
 <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 card-glow mb-6">
     <div class="flex items-center justify-between">
-        <div><h3 class="text-xl font-bold text-white">{agent_name}</h3><p class="text-sm text-slate-400 mt-1">{len(runs)} recorded runs</p></div>
+        <div><h3 class="text-xl font-bold text-white">{_esc(agent_name)}</h3><p class="text-sm text-slate-400 mt-1">{len(runs)} recorded runs</p></div>
         <div class="flex items-center space-x-4 text-sm">
             <span class="text-slate-400">Total found: <span class="text-white font-bold">{total_found}</span></span>
             <span class="text-slate-400">Total new: <span class="text-white font-bold">{total_new}</span></span>
@@ -996,7 +1709,7 @@ def agent_detail(agent_name):
     </table></div>
 </div>'''
 
-        return _render_page("Agent Detail", agent_name, "agents", content)
+        return _render_page("Agent Detail", _esc(agent_name), "agents", content)
     finally:
         db.close()
 
@@ -1017,7 +1730,7 @@ def analytics():
         location_map = {}
         score_bins = [0] * 10
         platform_total = {}
-        freshness = [0, 0, 0, 0]  # <7, 7-14, 14-30, 30+
+        freshness = [0, 0, 0, 0]
         category_map = {}
         now = datetime.now(timezone.utc)
 
@@ -1062,7 +1775,6 @@ def analytics():
             cat = data.get("category", "uncategorized") or "uncategorized"
             category_map[cat] = category_map.get(cat, 0) + 1
 
-        # Volume chart
         vol_labels = []
         vol_data = []
         for i in range(29, -1, -1):
@@ -1070,16 +1782,13 @@ def analytics():
             vol_labels.append((now - timedelta(days=i)).strftime("%b %d"))
             vol_data.append(daily_map.get(day, 0))
 
-        # Top 10 locations
         sorted_locs = sorted(location_map.items(), key=lambda x: x[1], reverse=True)[:10]
         loc_labels = json.dumps([l[0] for l in sorted_locs])
         loc_counts = json.dumps([l[1] for l in sorted_locs])
 
-        # Score bins
         score_labels = json.dumps([f"{i*10}-{i*10+9}" for i in range(10)])
         score_counts = json.dumps(score_bins)
 
-        # Platform comparison
         plat_labels = json.dumps([k.title() for k in platform_total.keys()])
         plat_total_json = json.dumps(list(platform_total.values()))
 
@@ -1100,7 +1809,6 @@ def analytics():
         vol_labels_json = json.dumps(vol_labels)
         vol_data_json = json.dumps(vol_data)
 
-        # Pipeline stats
         total_raw = len(rows)
         status_counts = db.execute("SELECT status, COUNT(*) FROM jobs GROUP BY status").fetchall()
         status_map = {r[0]: r[1] for r in status_counts}
@@ -1108,7 +1816,10 @@ def analytics():
         done_count = status_map.get("done", 0)
         failed_count = status_map.get("failed", 0)
         unique_agents = db.execute("SELECT COUNT(DISTINCT json_extract(payload, '$.agent')) FROM jobs WHERE job_type='raw_scrape'").fetchone()[0]
-        cd_count = db.execute("SELECT COUNT(*) FROM change_detection").fetchone()[0]
+        try:
+            cd_count = db.execute("SELECT COUNT(*) FROM change_detection").fetchone()[0]
+        except Exception:
+            cd_count = 0
         log_count = len(list(LOGS_DIR.glob("*.log"))) if LOGS_DIR.exists() else 0
 
         content = f'''
@@ -1171,7 +1882,7 @@ new Chart(document.getElementById('categoryChart'),{{type:'doughnut',data:{{labe
 
 
 # ---------------------------------------------------------------------------
-# API endpoint
+# API: Stats
 # ---------------------------------------------------------------------------
 
 @app.route("/api/stats")
@@ -1182,7 +1893,220 @@ def api_stats():
         today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
         new_today = db.execute("SELECT COUNT(*) FROM jobs WHERE job_type='raw_scrape' AND created_at >= ?", (today_start,)).fetchone()[0]
         pending = db.execute("SELECT COUNT(*) FROM jobs WHERE status='pending'").fetchone()[0]
-        return {"total_leads": total, "new_today": new_today, "pending": pending}
+        return jsonify({"total_leads": total, "new_today": new_today, "pending": pending})
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# API: Enhance a single lead
+# ---------------------------------------------------------------------------
+
+@app.route("/api/enhance/<lead_id>", methods=["POST"])
+def api_enhance_lead(lead_id):
+    """Search for additional info about a lead via Serper.dev."""
+    db = get_db()
+    try:
+        row = db.execute("SELECT * FROM jobs WHERE id=?", (lead_id,)).fetchone()
+        if not row:
+            return jsonify({"error": "Lead not found"}), 404
+
+        lead = _parse_lead(row)
+        name = lead["name"] or lead["title"] or ""
+        city = lead["city"] or "Utah"
+        platform = lead["platform"] or ""
+
+        if not name:
+            return jsonify({"error": "Lead has no name to search for"}), 400
+
+        # Use Serper.dev API for searches
+        serper_key = os.environ.get("SERPER_API_KEY", "")
+        if not serper_key:
+            return jsonify({"error": "SERPER_API_KEY not set. Set it in your environment to enable enhance."}), 400
+
+        import httpx
+
+        searches = []
+        found_data = {}
+
+        queries = [
+            f'"{name}" LinkedIn profile',
+            f'"{name}" "{city}" professional',
+            f'"{name}" email OR phone OR contact',
+        ]
+
+        for query in queries:
+            try:
+                resp = httpx.post(
+                    "https://google.serper.dev/search",
+                    json={"q": query, "num": 5, "gl": "us", "hl": "en"},
+                    headers={"X-API-KEY": serper_key, "Content-Type": "application/json"},
+                    timeout=15.0,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                results = []
+                for item in data.get("organic", []):
+                    url = item.get("link", "")
+                    results.append({
+                        "title": item.get("title", ""),
+                        "url": url,
+                        "snippet": item.get("snippet", ""),
+                    })
+                    # Auto-detect LinkedIn URL
+                    if "linkedin.com/in/" in url and not found_data.get("linkedin_url"):
+                        found_data["linkedin_url"] = url
+
+                searches.append({"query": query, "results": results})
+            except Exception as e:
+                searches.append({"query": query, "results": [], "error": str(e)})
+
+        # Mark as enhanced in the database
+        payload = safe_json(row["payload"])
+        payload_data = payload.get("data", {})
+        payload_data["enhanced"] = True
+        if found_data.get("linkedin_url"):
+            payload_data["linkedin_url"] = found_data["linkedin_url"]
+        payload["data"] = payload_data
+        db.execute("UPDATE jobs SET payload=? WHERE id=?", (json.dumps(payload), lead_id))
+        db.commit()
+
+        return jsonify({
+            "success": True,
+            "searches": searches,
+            "found_data": found_data,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# API: Save enhanced data to a lead
+# ---------------------------------------------------------------------------
+
+@app.route("/api/enhance/<lead_id>/save", methods=["POST"])
+def api_enhance_save(lead_id):
+    """Save found enhancement data back to the lead."""
+    db = get_db()
+    try:
+        row = db.execute("SELECT * FROM jobs WHERE id=?", (lead_id,)).fetchone()
+        if not row:
+            return jsonify({"error": "Lead not found"}), 404
+
+        save_data = request.get_json() or {}
+        payload = safe_json(row["payload"])
+        payload_data = payload.get("data", {})
+
+        if save_data.get("linkedin_url"):
+            payload_data["linkedin_url"] = save_data["linkedin_url"]
+        if save_data.get("email"):
+            payload_data["contact_email"] = save_data["email"]
+        if save_data.get("phone"):
+            payload_data["contact_phone"] = save_data["phone"]
+
+        payload_data["enhanced"] = True
+        payload["data"] = payload_data
+
+        db.execute("UPDATE jobs SET payload=? WHERE id=?", (json.dumps(payload), lead_id))
+        db.commit()
+
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# API: Auto-enhance A-tier leads
+# ---------------------------------------------------------------------------
+
+@app.route("/api/auto-enhance", methods=["POST"])
+def api_auto_enhance():
+    """Auto-enhance up to 10 A-tier leads that haven't been enhanced yet."""
+    db = get_db()
+    try:
+        rows = db.execute(
+            "SELECT * FROM jobs WHERE job_type='raw_scrape' ORDER BY created_at DESC"
+        ).fetchall()
+
+        serper_key = os.environ.get("SERPER_API_KEY", "")
+        if not serper_key:
+            return jsonify({"error": "SERPER_API_KEY not set"}), 400
+
+        import httpx
+
+        candidates = []
+        for row in rows:
+            p = safe_json(row["payload"])
+            data = p.get("data", {})
+            score = data.get("total_score", 0)
+            enhanced = data.get("enhanced", False)
+            if score >= 75 and not enhanced:
+                name = data.get("name", "")
+                if not name:
+                    first = data.get("first_name", "")
+                    last = data.get("last_name", "")
+                    name = f"{first} {last}".strip()
+                if not name:
+                    name = data.get("title", "")
+                if name:
+                    candidates.append({
+                        "id": row["id"],
+                        "name": name,
+                        "city": data.get("location_city", "Utah"),
+                    })
+            if len(candidates) >= 10:
+                break
+
+        enhanced_count = 0
+        results = []
+
+        for candidate in candidates:
+            try:
+                query = f'"{candidate["name"]}" LinkedIn profile "{candidate["city"]}"'
+                resp = httpx.post(
+                    "https://google.serper.dev/search",
+                    json={"q": query, "num": 3, "gl": "us", "hl": "en"},
+                    headers={"X-API-KEY": serper_key, "Content-Type": "application/json"},
+                    timeout=15.0,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+
+                linkedin_url = ""
+                for item in data.get("organic", []):
+                    url = item.get("link", "")
+                    if "linkedin.com/in/" in url:
+                        linkedin_url = url
+                        break
+
+                # Update the lead payload
+                row = db.execute("SELECT * FROM jobs WHERE id=?", (candidate["id"],)).fetchone()
+                if row:
+                    payload = safe_json(row["payload"])
+                    payload_data = payload.get("data", {})
+                    payload_data["enhanced"] = True
+                    if linkedin_url:
+                        payload_data["linkedin_url"] = linkedin_url
+                    payload["data"] = payload_data
+                    db.execute("UPDATE jobs SET payload=? WHERE id=?", (json.dumps(payload), candidate["id"]))
+                    db.commit()
+                    enhanced_count += 1
+                    results.append({"id": candidate["id"], "name": candidate["name"], "linkedin_url": linkedin_url})
+            except Exception as e:
+                results.append({"id": candidate["id"], "name": candidate["name"], "error": str(e)})
+
+        return jsonify({
+            "success": True,
+            "enhanced_count": enhanced_count,
+            "total_candidates": len(candidates),
+            "results": results,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
     finally:
         db.close()
 
