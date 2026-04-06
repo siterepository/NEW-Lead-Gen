@@ -20,19 +20,16 @@ cd "$PROJECT_DIR"
 
 echo "=== Lead Gen Scrape Started: $(date) ===" | tee "$LOG_FILE"
 
-# Run all registered KSL agents (most reliable)
-for agent in ksl_job_seekers ksl_services_offered ksl_business_for_sale ksl_resume_posts ksl_career_services ksl_gig_workers ksl_professional_services ksl_coaching_consulting; do
+# High-relevance Craigslist agents
+for agent in craigslist_slc_jobs_wanted craigslist_provo_jobs_wanted craigslist_slc_business craigslist_slc_gigs; do
     echo "--- Running: $agent ---" | tee -a "$LOG_FILE"
     leadgen run --agent "$agent" >> "$LOG_FILE" 2>&1 || echo "  [WARN] $agent had errors" | tee -a "$LOG_FILE"
-    sleep 2
+    sleep 5
 done
 
-# Run Craigslist agents
-for agent in craigslist_slc_jobs_wanted craigslist_provo_jobs_wanted craigslist_slc_resumes craigslist_slc_gigs craigslist_slc_business; do
-    echo "--- Running: $agent ---" | tee -a "$LOG_FILE"
-    leadgen run --agent "$agent" >> "$LOG_FILE" 2>&1 || echo "  [WARN] $agent had errors" | tee -a "$LOG_FILE"
-    sleep 3
-done
+# Web search agent (new)
+echo "--- Running: web_search ---" | tee -a "$LOG_FILE"
+leadgen run --agent web_search >> "$LOG_FILE" 2>&1 || echo "  [WARN] web_search had errors" | tee -a "$LOG_FILE"
 
 # Score all leads
 echo "--- Scoring leads ---" | tee -a "$LOG_FILE"

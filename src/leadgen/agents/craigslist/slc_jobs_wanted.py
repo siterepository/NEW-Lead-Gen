@@ -29,12 +29,16 @@ BASE_URL = "https://saltlakecity.craigslist.org"
 SEARCH_PATH = "/search/jjj"  # jobs wanted section
 
 SEARCH_KEYWORDS: list[str] = [
+    "commission sales",
+    "sales rep",
     "sales manager",
-    "insurance agent",
-    "real estate",
-    "business development",
+    "unlimited income",
+    "insurance sales",
+    "real estate agent",
     "financial advisor",
-    "entrepreneur",
+    "business development",
+    "account executive",
+    "own boss",
 ]
 
 

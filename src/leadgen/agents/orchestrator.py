@@ -35,6 +35,10 @@ from leadgen.agents.content import (
     RedditSLCCareersAgent, RedditUtahJobsAgent,
     RedditCareerGuidanceAgent, RedditFIREUtahAgent,
 )
+try:
+    from leadgen.agents.search import WebSearchAgent
+except ImportError:
+    WebSearchAgent = None  # TODO: implement WebSearchAgent in agents/search/
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +64,8 @@ _ALL_AGENTS: dict[str, type] = {
     "reddit_utah_jobs": RedditUtahJobsAgent,
     "reddit_career_guidance": RedditCareerGuidanceAgent,
     "reddit_fire_utah": RedditFIREUtahAgent,
+    # Web search
+    **({"web_search": WebSearchAgent} if WebSearchAgent else {}),
 }
 
 

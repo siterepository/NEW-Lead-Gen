@@ -30,9 +30,11 @@ SEARCH_PATH = "/search/ggg"  # gigs section
 
 SEARCH_KEYWORDS: list[str] = [
     "sales",
+    "commission",
     "business",
     "marketing",
     "financial",
+    "insurance",
 ]
 
 
