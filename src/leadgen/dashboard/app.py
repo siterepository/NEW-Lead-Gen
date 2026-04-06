@@ -23,6 +23,52 @@ DB_PATH = BASE_DIR / "data" / "leadgen.db"
 
 app = Flask(__name__)
 
+# Load NWM employees for connection matching
+NWM_EMPLOYEES = []
+NWM_NAMES_LOWER = set()
+_nwm_cache = Path.home() / ".leadgen" / "nwm_employees.json"
+if _nwm_cache.exists():
+    try:
+        _nwm_data = json.loads(_nwm_cache.read_text())
+        NWM_EMPLOYEES = _nwm_data.get("employees", [])
+        NWM_NAMES_LOWER = {e.get("name", "").lower().strip() for e in NWM_EMPLOYEES if e.get("name")}
+    except Exception:
+        pass
+
+
+def _find_nwm_connections(lead_name, lead_city=""):
+    """Find NWM employees who could be mutual connections.
+
+    Returns a list of NWM reps in the same city or region.
+    """
+    if not NWM_EMPLOYEES:
+        return []
+
+    connections = []
+    lead_city_lower = (lead_city or "").lower().strip()
+
+    for emp in NWM_EMPLOYEES:
+        emp_name = emp.get("name", "")
+        emp_city = emp.get("city", "").lower().strip()
+        emp_linkedin = emp.get("linkedin_url", "")
+        emp_title = emp.get("title", "")[:80]
+
+        # Same city match or general Utah match
+        is_match = (
+            (lead_city_lower and emp_city and lead_city_lower in emp_city)
+            or emp_city in ("utah", "ut", "")
+            or lead_city_lower in ("utah", "ut", "salt lake city", "slc", "")
+        )
+
+        if is_match:
+            connections.append({
+                "name": emp_name,
+                "title": emp_title,
+                "linkedin_url": emp_linkedin,
+            })
+
+    return connections[:5]  # Top 5 most relevant
+
 
 def get_db():
     conn = sqlite3.connect(str(DB_PATH))
@@ -113,6 +159,10 @@ def _parse_lead(row):
         source_type = "web"
         source_label = "Web page"
 
+    # Find NWM connections for this lead
+    city = data.get("location_city", "")
+    nwm_connections = _find_nwm_connections(display_name, city)
+
     return {
         "id": row["id"],
         "name": display_name,
@@ -131,7 +181,9 @@ def _parse_lead(row):
         "tier": tier,
         "scraped_at": scraped_at,
         "enhanced": enhanced,
-        "city": data.get("location_city", ""),
+        "city": city,
+        "nwm_connections": nwm_connections,
+        "has_nwm": len(nwm_connections) > 0,
     }
 
 
@@ -375,6 +427,14 @@ body { font-family: 'Inter', sans-serif; }
       </div>
       <span class="text-sm text-slate-400">A-tier only</span>
     </label>
+    <label class="flex items-center gap-2 cursor-pointer select-none">
+      <div class="relative">
+        <input id="nwmToggle" type="checkbox" class="sr-only peer" />
+        <div class="w-9 h-5 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:bg-amber-600 transition-colors"></div>
+        <div class="absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full transition-transform peer-checked:translate-x-4"></div>
+      </div>
+      <span class="text-sm text-slate-400">NWM connected</span>
+    </label>
     <span id="resultCount" class="text-xs text-slate-500 ml-auto"></span>
   </div>
 </div>
@@ -516,12 +576,14 @@ function getFiltered() {
   const query = document.getElementById('searchBox').value.toLowerCase().trim();
   const linkedinOnly = document.getElementById('linkedinToggle').checked;
   const atierOnly = document.getElementById('atierToggle').checked;
+  const nwmOnly = document.getElementById('nwmToggle').checked;
   const sort = document.getElementById('sortSelect').value;
 
   let list = allLeads;
 
   if (linkedinOnly) list = list.filter(l => l.has_linkedin);
   if (atierOnly) list = list.filter(l => l.tier === 'A');
+  if (nwmOnly) list = list.filter(l => l.has_nwm);
   if (query) {
     list = list.filter(l =>
       (l.name || '').toLowerCase().includes(query) ||
@@ -642,6 +704,7 @@ function renderTable() {
       <td class="py-3 px-3">
         <div class="font-medium text-white text-sm">${esc(l.name)}</div>
         ${l.title && l.title !== l.name ? `<div class="text-xs text-slate-500 truncate max-w-xs">${esc(l.title)}</div>` : ''}
+        ${l.has_nwm ? `<span class="inline-flex items-center gap-1 mt-0.5 px-1.5 py-0.5 bg-amber-900/40 text-amber-400 rounded text-[10px] font-medium border border-amber-700/30">NWM Connected</span>` : ''}
       </td>
       <td class="py-3 px-3">${linkedinCell}</td>
       <td class="py-3 px-3">
@@ -655,7 +718,7 @@ function renderTable() {
     </tr>
     <tr id="detail-${i}" class="hidden bg-slate-900/80 border-b border-slate-800/50">
       <td colspan="8" class="px-6 py-4">
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
           <div>
             <p class="text-slate-500 text-xs font-semibold uppercase mb-1">Why this lead exists</p>
             <p class="text-slate-300">${l.source_label || 'Web search'}: ${reason}</p>
@@ -665,6 +728,20 @@ function renderTable() {
             <p class="text-slate-500 text-xs font-semibold uppercase mb-1">Source</p>
             <p class="text-blue-400 text-xs break-all"><a href="${esc(l.url)}" target="_blank" class="hover:underline">${esc(l.url)}</a></p>
             ${l.search_query ? `<p class="text-slate-600 text-[10px] mt-1">Found via: "${esc(l.search_query)}"</p>` : ''}
+          </div>
+          <div>
+            <p class="text-slate-500 text-xs font-semibold uppercase mb-1">NWM Connections in Area</p>
+            ${l.nwm_connections && l.nwm_connections.length > 0
+              ? l.nwm_connections.map(c => `<div class="flex items-center gap-2 py-1 border-b border-slate-800/50 last:border-0">
+                  <div class="w-6 h-6 rounded-full bg-amber-900/50 flex items-center justify-center text-amber-400 text-[10px] font-bold">${esc(c.name.charAt(0))}</div>
+                  <div class="flex-1 min-w-0">
+                    <p class="text-white text-xs font-medium truncate">${esc(c.name)}</p>
+                    <p class="text-slate-500 text-[10px] truncate">${esc(c.title)}</p>
+                  </div>
+                  ${c.linkedin_url ? `<a href="${esc(c.linkedin_url)}" target="_blank" class="text-blue-400 hover:text-blue-300 text-[10px]">LinkedIn</a>` : ''}
+                </div>`).join('')
+              : `<p class="text-slate-600 text-xs">No NWM reps found in this area yet</p>`
+            }
           </div>
         </div>
       </td>
@@ -777,6 +854,7 @@ document.getElementById('searchBox').addEventListener('input', renderTable);
 document.getElementById('sortSelect').addEventListener('change', renderTable);
 document.getElementById('linkedinToggle').addEventListener('change', renderTable);
 document.getElementById('atierToggle').addEventListener('change', renderTable);
+document.getElementById('nwmToggle').addEventListener('change', renderTable);
 
 // Start
 init();
