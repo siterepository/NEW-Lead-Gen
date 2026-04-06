@@ -58,13 +58,19 @@ CREATE TABLE IF NOT EXISTS leads (
     sentiment_score      DOUBLE PRECISION CHECK (sentiment_score >= -1.0 AND sentiment_score <= 1.0),
     motivation_keywords  TEXT[],
 
-    -- scoring (100-point system)
-    score_career_fit     INTEGER NOT NULL DEFAULT 0 CHECK (score_career_fit   BETWEEN 0 AND 35),
-    score_motivation     INTEGER NOT NULL DEFAULT 0 CHECK (score_motivation    BETWEEN 0 AND 25),
-    score_people_skills  INTEGER NOT NULL DEFAULT 0 CHECK (score_people_skills BETWEEN 0 AND 20),
-    score_demographics   INTEGER NOT NULL DEFAULT 0 CHECK (score_demographics  BETWEEN 0 AND 10),
-    score_data_quality   INTEGER NOT NULL DEFAULT 0 CHECK (score_data_quality  BETWEEN 0 AND 10),
-    total_score          INTEGER NOT NULL DEFAULT 0 CHECK (total_score         BETWEEN 0 AND 100),
+    -- NWM connection intelligence
+    has_nwm_mutual_connection BOOLEAN NOT NULL DEFAULT FALSE,
+    nwm_mutual_names     TEXT[],
+    nwm_connection_source TEXT,
+
+    -- scoring (100-point system + 40pt NWM boost)
+    score_career_fit     INTEGER NOT NULL DEFAULT 0 CHECK (score_career_fit    BETWEEN 0 AND 35),
+    score_motivation     INTEGER NOT NULL DEFAULT 0 CHECK (score_motivation     BETWEEN 0 AND 25),
+    score_people_skills  INTEGER NOT NULL DEFAULT 0 CHECK (score_people_skills  BETWEEN 0 AND 20),
+    score_demographics   INTEGER NOT NULL DEFAULT 0 CHECK (score_demographics   BETWEEN 0 AND 10),
+    score_data_quality   INTEGER NOT NULL DEFAULT 0 CHECK (score_data_quality   BETWEEN 0 AND 10),
+    score_nwm_connection INTEGER NOT NULL DEFAULT 0 CHECK (score_nwm_connection BETWEEN 0 AND 40),
+    total_score          INTEGER NOT NULL DEFAULT 0 CHECK (total_score          BETWEEN 0 AND 140),
     tier                 TEXT CHECK (tier IN ('A', 'B', 'C', 'D')),
 
     -- source tracking

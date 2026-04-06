@@ -98,13 +98,28 @@ class Lead(BaseModel):
         description="Extracted motivation-related keywords (e.g. 'looking for change', 'entrepreneurial')",
     )
 
-    # --- Scoring (100-point system) --------------------------------------
+    # --- NWM Connection Intelligence ----------------------------------------
+    has_nwm_mutual_connection: bool = Field(
+        default=False,
+        description="True if lead shares a mutual connection with someone at Northwestern Mutual",
+    )
+    nwm_mutual_names: Optional[list[str]] = Field(
+        default=None,
+        description="Names of mutual connections at NWM (if known)",
+    )
+    nwm_connection_source: Optional[str] = Field(
+        default=None, max_length=200,
+        description="How the NWM connection was detected (linkedin, referral, etc.)",
+    )
+
+    # --- Scoring (100-point system + 40pt NWM boost) ----------------------
     score_career_fit: int = Field(default=0, ge=0, le=35, description="Career fit score out of 35")
     score_motivation: int = Field(default=0, ge=0, le=25, description="Motivation score out of 25")
     score_people_skills: int = Field(default=0, ge=0, le=20, description="People/leadership skills score out of 20")
     score_demographics: int = Field(default=0, ge=0, le=10, description="Demographics score out of 10")
     score_data_quality: int = Field(default=0, ge=0, le=10, description="Data quality/completeness score out of 10")
-    total_score: int = Field(default=0, ge=0, le=100, description="Composite score out of 100")
+    score_nwm_connection: int = Field(default=0, ge=0, le=40, description="NWM mutual connection boost (0 or 40)")
+    total_score: int = Field(default=0, ge=0, le=140, description="Composite score out of 140 (100 base + 40 NWM boost)")
     tier: Optional[str] = Field(
         default=None,
         pattern=r"^[A-D]$",
@@ -164,14 +179,20 @@ class Lead(BaseModel):
 
     @model_validator(mode="after")
     def auto_compute_total_and_tier(self) -> "Lead":
-        """Recompute total_score and tier from sub-scores on every validation."""
-        self.total_score = (
+        """Recompute total_score and tier from sub-scores on every validation.
+
+        Includes the +40 NWM mutual connection boost if applicable.
+        """
+        base_score = (
             self.score_career_fit
             + self.score_motivation
             + self.score_people_skills
             + self.score_demographics
             + self.score_data_quality
         )
+        self.total_score = base_score + self.score_nwm_connection
+
+        # Tier thresholds (75/50/25 on base 100, NWM boost can push higher)
         if self.total_score >= 75:
             self.tier = "A"
         elif self.total_score >= 50:

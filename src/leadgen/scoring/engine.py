@@ -403,18 +403,53 @@ class ScoringEngine:
     # Main scoring entry point
     # ------------------------------------------------------------------
 
+    def score_nwm_connection(self, lead: Lead) -> int:
+        """
+        Score the NWM mutual connection boost (0 or 40 points).
+
+        A lead with a mutual connection to someone at Northwestern Mutual
+        gets a +40 point boost. This is detected via:
+        - has_nwm_mutual_connection flag (set by enrichment or manual input)
+        - LinkedIn profile mentions NWM connections
+        - Source text mentions Northwestern Mutual
+        """
+        if lead.has_nwm_mutual_connection:
+            return 40
+
+        # Auto-detect from source text or career history
+        nwm_keywords = [
+            "northwestern mutual", "north western mutual",
+            "nwm", "nm financial",
+        ]
+        texts_to_check = [
+            lead.source_post_text or "",
+            lead.current_company or "",
+            " ".join(lead.career_history or []),
+        ]
+        combined = " ".join(texts_to_check).lower()
+
+        for kw in nwm_keywords:
+            if kw in combined:
+                lead.has_nwm_mutual_connection = True
+                lead.nwm_connection_source = "auto-detected from profile/post text"
+                return 40
+
+        return 0
+
     def score_lead(self, lead: Lead) -> Lead:
         """
         Run the full scoring pipeline on a lead.
 
-        Computes all five dimension scores, sums them to a total,
-        assigns a tier (A/B/C/D), and returns the updated Lead.
+        Computes all five dimension scores plus the NWM connection boost,
+        sums them to a total, assigns a tier (A/B/C/D), and returns the
+        updated Lead.
         """
         lead.score_career_fit = self.score_career_fit(lead)
         lead.score_motivation = self.score_motivation(lead)
         lead.score_people_skills = self.score_people_skills(lead)
         lead.score_demographics = self.score_demographics(lead)
         lead.score_data_quality = self.score_data_quality(lead)
+        lead.score_nwm_connection = self.score_nwm_connection(lead)
 
         lead.total_score = (
             lead.score_career_fit
@@ -422,6 +457,7 @@ class ScoringEngine:
             + lead.score_people_skills
             + lead.score_demographics
             + lead.score_data_quality
+            + lead.score_nwm_connection
         )
 
         # Tier assignment
