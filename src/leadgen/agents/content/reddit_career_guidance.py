@@ -67,7 +67,7 @@ class RedditCareerGuidanceAgent(BaseAgent):
             self._client = httpx.AsyncClient(
                 timeout=30.0,
                 headers={
-                    "User-Agent": self.get_random_user_agent(),
+                    "User-Agent": "script:leadgen:v0.1.0 (NWM lead research tool)",
                     "Accept": "application/json",
                 },
                 follow_redirects=True,
